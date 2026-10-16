@@ -1,0 +1,51 @@
+# Strata — drop this into a Dockge stack.
+#
+# IMPORTANT: this app has no login. Only publish it on your tailnet.
+# Do not map it to a public port or point a public DNS record at it.
+
+services:
+  strata:
+    build: .
+    # Once you have pushed an image somewhere, swap `build` for:
+    # image: ghcr.io/<you>/strata:latest
+    container_name: strata
+    restart: unless-stopped
+
+    environment:
+      # Display name in the sidebar.
+      STRATA_NAME: "Strata"
+      # Timestamps render in this zone.
+      TZ: "America/Phoenix"
+
+    volumes:
+      # ── Point this at the TrueNAS dataset you want to browse. ──
+      # Left side  = host path on TrueNAS (your dataset)
+      # Right side = always /data
+      #
+      # Read-write (needed for uploads and sheet editing):
+      - /mnt/tank/documents:/data
+      #
+      # If you would rather start read-only, append :ro —
+      #   - /mnt/tank/documents:/data:ro
+      # Uploads and sheet saves will fail with a clear error in that mode.
+
+    ports:
+      # Bound to localhost only. Nginx Proxy Manager reaches it over the
+      # Docker network, so nothing needs to listen on the LAN.
+      # If NPM runs in a different stack, see the networks note in README.
+      - "127.0.0.1:8080:8080"
+
+    # Run as a specific uid:gid instead of root to limit what it can touch.
+    # Find the owner of your dataset with: ls -n /mnt/tank/documents
+    # user: "1000:1000"
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 4s
+      retries: 3
+      start_period: 5s
+
+    # The container needs no extra privileges to read a bind mount.
+    security_opt:
+      - no-new-privileges:true
