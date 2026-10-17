@@ -20,6 +20,7 @@
   /* The single interaction colour. Selection and focus only. */
   --select:    #7FB2E5;
   --select-bg: rgba(127, 178, 229, 0.12);
+  --on-select: #111111;
 
   /* File kinds. These are data, not decoration. */
   --k-folder:  #D8C07A;
@@ -51,45 +52,9 @@
   color-scheme: dark;
 }
 
-:root[data-theme="light"],
-:root:not([data-theme="dark"]) {
-  /* overridden below by the media query; explicit light wins */
-}
-
-:root[data-theme="light"] {
-  --bg:        #F7F7F5;
-  --surface:   #FFFFFF;
-  --raised:    #F0F0ED;
-  --line:      #DEDEDA;
-  --line-soft: #EAEAE6;
-
-  --ink:       #1A1C1B;
-  --ink-dim:   #5E635F;
-  --ink-faint: #8A908B;
-
-  --select:    #2C6FAF;
-  --select-bg: rgba(44, 111, 175, 0.10);
-
-  --k-folder:  #A8842C;
-  --k-sheet:   #2E7D4F;
-  --k-image:   #7A52A3;
-  --k-pdf:     #B6483C;
-  --k-video:   #2C6FAF;
-  --k-audio:   #A86A1E;
-  --k-text:    #5E635F;
-  --k-archive: #7A6534;
-  --k-doc:     #35609E;
-  --k-slides:  #A06218;
-
-  --ok:   #2E7D4F;
-  --warn: #A86A1E;
-  --crit: #B6483C;
-
-  color-scheme: light;
-}
-
+/* Fallback before themes.ts runs; it sets every variable inline on <html>. */
 @media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
+  :root {
     --bg:        #F7F7F5;
     --surface:   #FFFFFF;
     --raised:    #F0F0ED;
@@ -102,6 +67,7 @@
 
     --select:    #2C6FAF;
     --select-bg: rgba(44, 111, 175, 0.10);
+    --on-select: #FFFFFF;
 
     --k-folder:  #A8842C;
     --k-sheet:   #2E7D4F;
@@ -334,6 +300,7 @@ button { font: inherit; color: inherit; }
   color: var(--ink-dim);
   cursor: pointer;
   white-space: nowrap;
+  text-decoration: none;
 }
 
 .btn:hover { background: var(--raised); color: var(--ink); border-color: var(--ink-faint); }
@@ -343,11 +310,11 @@ button { font: inherit; color: inherit; }
 .btn.primary {
   background: var(--select);
   border-color: var(--select);
-  color: #0E1114;
+  color: var(--on-select);
   font-weight: 500;
 }
 
-.btn.primary:hover { filter: brightness(1.08); color: #0E1114; }
+.btn.primary:hover { filter: brightness(1.08); color: var(--on-select); }
 
 .btn.danger:hover { color: var(--crit); border-color: var(--crit); background: var(--surface); }
 
@@ -480,6 +447,8 @@ button { font: inherit; color: inherit; }
   display: flex;
   flex-direction: column;
   background: var(--bg);
+  /* Re-resolve ink here so a viewer theme reaches text that inherits colour. */
+  color: var(--ink);
 }
 
 .overlay-bar {
@@ -727,6 +696,77 @@ table.grid td input:focus { outline: none; }
 .dialog input:focus { outline: none; border-color: var(--select); }
 
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ─── appearance ─────────────────────────────────────────────────────────── */
+
+.rail-head .btn-icon { margin-left: auto; height: 26px; width: 26px; border: 0; background: none; }
+.rail-head .btn-icon:hover { background: var(--raised); }
+
+.dialog.wide { width: min(620px, 100%); max-height: calc(100vh - 40px); overflow-y: auto; }
+.dialog h4 { margin: 18px 0 8px; font-size: 12px; font-weight: 600; color: var(--ink-dim); }
+.dialog h4:first-of-type { margin-top: 12px; }
+
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 8px;
+}
+
+.theme-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+
+.theme-card:hover { border-color: var(--ink-faint); color: var(--ink); }
+.theme-card[aria-pressed="true"] { border-color: var(--select); color: var(--ink); background: var(--select-bg); }
+
+/* A miniature of the theme: its page, ink, and three kind colours. */
+.swatch {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  height: 44px;
+  padding: 7px 8px;
+  border-radius: 3px;
+  border: 1px solid rgba(127, 127, 127, 0.25);
+}
+
+.swatch i { display: block; height: 4px; border-radius: 2px; }
+
+.field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.field-row:last-child { border-bottom: 0; }
+
+.select {
+  height: 28px;
+  min-width: 170px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+}
+
+.select.compact { min-width: 0; height: 30px; color: var(--ink-dim); background: var(--surface); }
+
+.hint { margin: 6px 0 0; font-size: 11.5px; color: var(--ink-faint); }
 
 /* ─── toast ──────────────────────────────────────────────────────────────── */
 

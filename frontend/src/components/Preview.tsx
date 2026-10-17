@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, type Entry } from "../lib/api";
 import { bytes } from "../lib/format";
+import { setScopeTheme, themeVars, useScopeTheme } from "../lib/themes";
+import { ThemeSelect } from "./Appearance";
 
 /** Full-screen preview for the file kinds a browser can render natively. */
 export function Preview({ entry, onClose }: { entry: Entry; onClose: () => void }) {
@@ -21,9 +23,17 @@ export function Preview({ entry, onClose }: { entry: Entry; onClose: () => void 
   }, [entry.path, entry.kind]);
 
   const url = api.rawUrl(entry.path);
+  const scope = entry.kind === "text" || entry.kind === "csv" ? "text" : "media";
+  const theme = useScopeTheme(scope);
 
   return (
-    <div className="overlay" role="dialog" aria-modal="true" aria-label={entry.name}>
+    <div
+      className="overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={entry.name}
+      style={themeVars(theme) as React.CSSProperties}
+    >
       <div className="overlay-bar">
         <button className="btn btn-icon" onClick={onClose} aria-label="Close preview">
           ✕
@@ -32,6 +42,8 @@ export function Preview({ entry, onClose }: { entry: Entry; onClose: () => void 
           <strong>{entry.name}</strong>
           <span>{bytes(entry.size)}</span>
         </div>
+        <ThemeSelect compact label="Theme for this file type" value={theme}
+          onChange={(id) => setScopeTheme(scope, id)} />
         <a className="btn" href={api.downloadUrl(entry.path)} download>
           Download
         </a>
