@@ -16,6 +16,15 @@ services:
       STRATA_NAME: "Strata"
       # Timestamps render in this zone.
       TZ: "America/Phoenix"
+      # Sign-in passphrase hash (see README "Sign-in").
+      STRATA_PASSWORD_FILE: /run/secrets/strata_password
+      # The hostname you open Strata by through your proxy.
+      # STRATA_ALLOWED_HOSTS: "strata.example.com"
+      # Your proxy's Docker network, so its forwarded headers are believed.
+      # STRATA_TRUSTED_PROXIES: "172.18.0.0/16"
+
+    secrets:
+      - strata_password
 
     volumes:
       # ── Point this at the TrueNAS dataset you want to browse. ──
@@ -54,3 +63,8 @@ services:
     # The container needs no extra privileges to read a bind mount.
     security_opt:
       - no-new-privileges:true
+
+secrets:
+  strata_password:
+    # Created with: docker compose run --rm -it strata hash-password > strata_password
+    file: ./strata_password

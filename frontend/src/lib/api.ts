@@ -77,6 +77,9 @@ const GUARD = { "X-Strata": "1" };
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...init, headers: { ...GUARD, ...init?.headers } });
+  if (res.status === 401 && !url.startsWith("/api/session") && !url.startsWith("/api/login")) {
+    signedOut();
+  }
   if (!res.ok) {
     throw new ApiError((await res.text()).trim() || `${res.status} ${res.statusText}`, res.status);
   }
@@ -85,7 +88,23 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 
 const q = (p: string) => encodeURIComponent(p);
 
+/** Fired when the server says the session is gone, so the UI can ask again. */
+export const SIGNED_OUT = "strata:signed-out";
+const signedOut = () => window.dispatchEvent(new Event(SIGNED_OUT));
+
 export const api = {
+  /** Resolves to whether sign-in is enabled; rejects with 401 when signed out. */
+  session: () => req<{ ok: true; auth?: boolean }>("/api/session").then((s) => s.auth !== false),
+
+  login: (passphrase: string) =>
+    req<{ ok: true }>("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ passphrase }),
+    }),
+
+  logout: () => req<{ ok: true }>("/api/logout", { method: "POST" }),
+
   list: (path: string) => req<Listing>(`/api/list?path=${q(path)}`),
   usage: () => req<Usage>("/api/usage"),
   text: (path: string) => req<{ content: string; truncated: boolean }>(`/api/text?path=${q(path)}`),
@@ -141,10 +160,12 @@ export const api = {
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && onProgress) onProgress((e.loaded / e.total) * 100);
       };
-      xhr.onload = () =>
-        xhr.status >= 200 && xhr.status < 300
+      xhr.onload = () => {
+        if (xhr.status === 401) signedOut();
+        return xhr.status >= 200 && xhr.status < 300
           ? resolve()
           : reject(new Error(xhr.responseText.trim() || `Upload failed (${xhr.status})`));
+      };
       xhr.onerror = () => reject(new Error("Upload failed"));
       xhr.send(form);
     }),
