@@ -6,10 +6,7 @@
     <meta name="color-scheme" content="dark light" />
     <meta name="theme-color" content="#16181A" />
     <title>Strata</title>
-    <script>
-      // Restore the last theme's variables before first paint (themes.ts writes them).
-      try { var v = localStorage.getItem("strata.vars"); if (v) document.documentElement.style.cssText = v; } catch (e) {}
-    </script>
+    <script src="/theme-boot.js"></script>
   </head>
   <body>
     <div id="root"></div>

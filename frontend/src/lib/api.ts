@@ -63,8 +63,12 @@ export interface Grid {
   truncated: boolean;
 }
 
+// The server rejects state-changing requests without this header; a
+// cross-site page can't add it without a CORS preflight we never approve.
+const GUARD = { "X-Strata": "1" };
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
+  const res = await fetch(url, { ...init, headers: { ...GUARD, ...init?.headers } });
   if (!res.ok) {
     throw new Error((await res.text()).trim() || `${res.status} ${res.statusText}`);
   }
@@ -125,6 +129,7 @@ export const api = {
       // progress and these are NAS-sized files.
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `/api/upload?path=${q(dir)}`);
+      xhr.setRequestHeader("X-Strata", "1");
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && onProgress) onProgress((e.loaded / e.total) * 100);
       };
