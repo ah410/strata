@@ -61,6 +61,14 @@ export interface Grid {
   maxRow: number;
   maxCol: number;
   truncated: boolean;
+  version: string;
+}
+
+/** An HTTP error that keeps its status, so callers can react to e.g. 409. */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
 }
 
 // The server rejects state-changing requests without this header; a
@@ -70,7 +78,7 @@ const GUARD = { "X-Strata": "1" };
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...init, headers: { ...GUARD, ...init?.headers } });
   if (!res.ok) {
-    throw new Error((await res.text()).trim() || `${res.status} ${res.statusText}`);
+    throw new ApiError((await res.text()).trim() || `${res.status} ${res.statusText}`, res.status);
   }
   return res.json() as Promise<T>;
 }
@@ -85,11 +93,11 @@ export const api = {
   sheet: (path: string, sheet?: string) =>
     req<Grid>(`/api/sheet?path=${q(path)}${sheet ? `&sheet=${q(sheet)}` : ""}`),
 
-  saveSheet: (path: string, sheet: string, edits: { ref: string; value: string }[]) =>
+  saveSheet: (path: string, sheet: string, version: string, edits: { ref: string; value: string }[]) =>
     req<Grid>("/api/sheet", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path, sheet, edits }),
+      body: JSON.stringify({ path, sheet, version, edits }),
     }),
 
   mkdir: (path: string) =>

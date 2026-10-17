@@ -8,10 +8,13 @@ package sheet
 
 import (
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/xuri/excelize/v2"
 
+	"strata/internal/fileops"
+	"strata/internal/safepath"
 	"strata/internal/userr"
 )
 
@@ -34,24 +37,24 @@ type Cell struct {
 
 // Style carries the subset of formatting the editor renders.
 type Style struct {
-	Bold       bool   `json:"bold,omitempty"`
-	Italic     bool   `json:"italic,omitempty"`
-	Size       int    `json:"size,omitempty"`
-	Color      string `json:"color,omitempty"`  // "#RRGGBB"
-	Fill       string `json:"fill,omitempty"`   // "#RRGGBB"
-	Align      string `json:"align,omitempty"`  // left|center|right
-	Family     string `json:"family,omitempty"` // font name
-	WrapText   bool   `json:"wrap,omitempty"`
-	NumberFmt  string `json:"numFmt,omitempty"`
+	Bold      bool   `json:"bold,omitempty"`
+	Italic    bool   `json:"italic,omitempty"`
+	Size      int    `json:"size,omitempty"`
+	Color     string `json:"color,omitempty"`  // "#RRGGBB"
+	Fill      string `json:"fill,omitempty"`   // "#RRGGBB"
+	Align     string `json:"align,omitempty"`  // left|center|right
+	Family    string `json:"family,omitempty"` // font name
+	WrapText  bool   `json:"wrap,omitempty"`
+	NumberFmt string `json:"numFmt,omitempty"`
 }
 
 // Merge is a merged cell region, expressed in 1-based inclusive coordinates.
 type Merge struct {
-	Ref      string `json:"ref"`
-	Row      int    `json:"row"`
-	Col      int    `json:"col"`
-	RowSpan  int    `json:"rowSpan"`
-	ColSpan  int    `json:"colSpan"`
+	Ref     string `json:"ref"`
+	Row     int    `json:"row"`
+	Col     int    `json:"col"`
+	RowSpan int    `json:"rowSpan"`
+	ColSpan int    `json:"colSpan"`
 }
 
 // Column carries per-column display width.
@@ -68,26 +71,70 @@ type Row struct {
 
 // Grid is one worksheet rendered for the editor.
 type Grid struct {
-	Sheets   []string `json:"sheets"`
-	Active   string   `json:"active"`
-	Cells    []Cell   `json:"cells"`
-	Merges   []Merge  `json:"merges"`
-	Columns  []Column `json:"columns"`
-	Rows     []Row    `json:"rows"`
-	MaxRow   int      `json:"maxRow"`
-	MaxCol   int      `json:"maxCol"`
-	Truncated bool    `json:"truncated"`
+	Sheets    []string `json:"sheets"`
+	Active    string   `json:"active"`
+	Cells     []Cell   `json:"cells"`
+	Merges    []Merge  `json:"merges"`
+	Columns   []Column `json:"columns"`
+	Rows      []Row    `json:"rows"`
+	MaxRow    int      `json:"maxRow"`
+	MaxCol    int      `json:"maxCol"`
+	Truncated bool     `json:"truncated"`
+	// Version identifies the file as read; a save must send it back.
+	Version string `json:"version"`
 }
+
+// MaxFileSize caps workbooks before parsing. Files are read into memory and
+// xlsx is a zip, so an unbounded file is an easy way to exhaust the NAS.
+const MaxFileSize = 64 << 20
+
+// ErrConflict means the file changed on disk after the editor loaded it.
+var ErrConflict = userr.Error("this file changed since you opened it; reload to see the new version")
 
 // Read opens path and renders one worksheet. An empty active name selects the
 // workbook's first sheet.
-func Read(path, active string) (*Grid, error) {
-	f, err := excelize.OpenFile(path)
+func Read(root *safepath.Root, rel, active string) (*Grid, error) {
+	f, version, err := open(root, rel)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 
+	g, err := render(f, active)
+	if err != nil {
+		return nil, err
+	}
+	g.Version = version
+	return g, nil
+}
+
+// open reads a workbook through the root, bounded in size, and reports the
+// version of the bytes it read.
+func open(root *safepath.Root, rel string) (*excelize.File, string, error) {
+	fh, err := root.FS().Open(safepath.Clean(rel))
+	if err != nil {
+		return nil, "", safepath.Err(err)
+	}
+	defer fh.Close()
+
+	info, err := fh.Stat()
+	if err != nil {
+		return nil, "", err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, "", userr.Error("not a workbook")
+	}
+	if info.Size() > MaxFileSize {
+		return nil, "", userr.Error(fmt.Sprintf("workbook is too large to open here (limit %d MB)", MaxFileSize>>20))
+	}
+	f, err := excelize.OpenReader(fh, excelize.Options{UnzipSizeLimit: 512 << 20})
+	if err != nil {
+		return nil, "", err
+	}
+	return f, fmt.Sprintf("%x-%x", info.ModTime().UnixNano(), info.Size()), nil
+}
+
+func render(f *excelize.File, active string) (*Grid, error) {
 	names := f.GetSheetList()
 	if len(names) == 0 {
 		return nil, userr.Error("workbook has no sheets")
@@ -317,12 +364,18 @@ type Edit struct {
 // A value beginning with '=' is stored as a formula; everything else is
 // stored as a literal, with numbers coerced so Excel treats them as numeric.
 // Formula cells the user did not touch are left exactly as they were.
-func Write(path, sheetName string, edits []Edit) (*Grid, error) {
-	f, err := excelize.OpenFile(path)
+func Write(root *safepath.Root, rel, sheetName, version string, edits []Edit) (*Grid, error) {
+	f, current, err := open(root, rel)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+
+	// Someone else (another tab, Excel over SMB) saved since this editor
+	// loaded the file. Overwriting would silently discard their changes.
+	if version != current {
+		return nil, ErrConflict
+	}
 
 	if !contains(f.GetSheetList(), sheetName) {
 		return nil, userr.Error(fmt.Sprintf("no such sheet: %s", sheetName))
@@ -353,12 +406,14 @@ func Write(path, sheetName string, edits []Edit) (*Grid, error) {
 		}
 	}
 
-	if err := f.Save(); err != nil {
+	// Write a complete new file and rename it over the old one, so a crash
+	// mid-save can never leave a half-written workbook.
+	if err := fileops.WriteAtomic(root, rel, func(w io.Writer) error { return f.Write(w) }); err != nil {
 		return nil, err
 	}
 
 	// Re-read so the response carries freshly calculated formula results.
-	return Read(path, sheetName)
+	return Read(root, rel, sheetName)
 }
 
 // setTyped writes v with its natural Excel type so that numeric cells stay

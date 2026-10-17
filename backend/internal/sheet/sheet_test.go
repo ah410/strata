@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"strata/internal/safepath"
 )
 
 // These tests need a real workbook that contains formulas. Point
@@ -15,7 +17,7 @@ import (
 // Settings!C10 holds a mileage that dashboard formulas depend on, so the
 // value-specific cases only make sense with that workbook. The structural
 // cases hold for any workbook with formulas.
-func copyFixture(t *testing.T) string {
+func copyFixture(t *testing.T) (*safepath.Root, string) {
 	t.Helper()
 	fixture := os.Getenv("STRATA_TEST_XLSX")
 	if fixture == "" {
@@ -25,11 +27,25 @@ func copyFixture(t *testing.T) string {
 	if err != nil {
 		t.Skipf("fixture unavailable: %v", err)
 	}
-	dst := filepath.Join(t.TempDir(), "book.xlsx")
-	if err := os.WriteFile(dst, src, 0o644); err != nil {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "book.xlsx"), src, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return dst
+	root, err := safepath.NewRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root, "book.xlsx"
+}
+
+// write saves edits against the file's current version, as the editor does.
+func write(t *testing.T, root *safepath.Root, rel, sheetName string, edits []Edit) (*Grid, error) {
+	t.Helper()
+	g, err := Read(root, rel, sheetName)
+	if err != nil {
+		t.Fatalf("Read before write: %v", err)
+	}
+	return Write(root, rel, sheetName, g.Version, edits)
 }
 
 func cellAt(g *Grid, ref string) *Cell {
@@ -42,9 +58,9 @@ func cellAt(g *Grid, ref string) *Cell {
 }
 
 func TestReadComputesFormulaValues(t *testing.T) {
-	path := copyFixture(t)
+	root, path := copyFixture(t)
 
-	g, err := Read(path, "Maintenance Dashboard")
+	g, err := Read(root, path, "Maintenance Dashboard")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -81,9 +97,9 @@ func TestReadComputesFormulaValues(t *testing.T) {
 }
 
 func TestWritePreservesFormulasAndRecalculates(t *testing.T) {
-	path := copyFixture(t)
+	root, path := copyFixture(t)
 
-	before, err := Read(path, "Maintenance Dashboard")
+	before, err := Read(root, path, "Maintenance Dashboard")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -94,11 +110,11 @@ func TestWritePreservesFormulasAndRecalculates(t *testing.T) {
 
 	// Drive the mileage up by 1000 via the Settings input cell (C10) and confirm
 	// the dependent dashboard formula moves by the same amount.
-	if _, err := Write(path, "Settings", []Edit{{Ref: "C10", Value: "193556"}}); err != nil {
+	if _, err := write(t, root, path, "Settings", []Edit{{Ref: "C10", Value: "193556"}}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
-	after, err := Read(path, "Maintenance Dashboard")
+	after, err := Read(root, path, "Maintenance Dashboard")
 	if err != nil {
 		t.Fatalf("Read after write: %v", err)
 	}
@@ -117,21 +133,21 @@ func TestWritePreservesFormulasAndRecalculates(t *testing.T) {
 }
 
 func TestWriteRejectsBadReference(t *testing.T) {
-	path := copyFixture(t)
-	if _, err := Write(path, "Settings", []Edit{{Ref: "../etc", Value: "x"}}); err == nil {
+	root, path := copyFixture(t)
+	if _, err := write(t, root, path, "Settings", []Edit{{Ref: "../etc", Value: "x"}}); err == nil {
 		t.Error("expected error for malformed cell reference")
 	}
 }
 
 func TestSetTypedKeepsNumbersNumeric(t *testing.T) {
-	path := copyFixture(t)
+	root, path := copyFixture(t)
 
 	// A user typing a thousands separator should still produce a number,
 	// otherwise every formula referencing the cell breaks.
-	if _, err := Write(path, "Settings", []Edit{{Ref: "C10", Value: "200,000"}}); err != nil {
+	if _, err := write(t, root, path, "Settings", []Edit{{Ref: "C10", Value: "200,000"}}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	g, err := Read(path, "Settings")
+	g, err := Read(root, path, "Settings")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +157,7 @@ func TestSetTypedKeepsNumbersNumeric(t *testing.T) {
 	}
 	t.Logf("C10 stored as %q", c9.Value)
 
-	dash, err := Read(path, "Maintenance Dashboard")
+	dash, err := Read(root, path, "Maintenance Dashboard")
 	if err != nil {
 		t.Fatal(err)
 	}
