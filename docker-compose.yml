@@ -35,12 +35,17 @@ services:
       # If NPM runs in a different stack, see the networks note in README.
       - "127.0.0.1:8080:8080"
 
-    # Run as a specific uid:gid instead of root to limit what it can touch.
-    # Find the owner of your dataset with: ls -n /mnt/tank/documents
+    # The image runs as uid 65532 by default. Set this to a uid:gid that has
+    # write access to your dataset (e.g. a dedicated user with an ACL entry).
     # user: "1000:1000"
 
+    # Nothing in the container needs to be writable except the share itself.
+    read_only: true
+    cap_drop:
+      - ALL
+
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/health"]
+      test: ["CMD", "/usr/local/bin/strata", "healthcheck"]
       interval: 30s
       timeout: 4s
       retries: 3

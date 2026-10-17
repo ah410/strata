@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"os"
 	"path"
@@ -36,6 +37,10 @@ const maxUpload = 8 << 30 // 8 GiB
 var root *safepath.Root
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(healthcheck(envOr("STRATA_ADDR", ":8080")))
+	}
+
 	var (
 		dir  = flag.String("root", envOr("STRATA_ROOT", "/data"), "directory to serve")
 		addr = flag.String("addr", envOr("STRATA_ADDR", ":8080"), "listen address")
@@ -76,6 +81,28 @@ func main() {
 		// No write timeout: large downloads and uploads legitimately run long.
 	}
 	log.Fatal(srv.ListenAndServe())
+}
+
+// healthcheck probes the local server for the container HEALTHCHECK, since
+// the distroless image has no wget or curl.
+func healthcheck(addr string) int {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 1
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	c := http.Client{Timeout: 3 * time.Second}
+	res, err := c.Get("http://" + net.JoinHostPort(host, port) + "/api/health")
+	if err != nil {
+		return 1
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
 }
 
 func envOr(key, fallback string) string {

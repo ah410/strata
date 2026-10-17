@@ -1,0 +1,9 @@
+# Build artefacts and local state — never send these to the Docker daemon.
+frontend/node_modules
+frontend/dist
+backend/dist
+backend/strata
+*.log
+.git
+.DS_Store
+frontend/tsconfig.tsbuildinfo
