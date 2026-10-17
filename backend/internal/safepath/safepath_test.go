@@ -25,106 +25,103 @@ func newTestRoot(t *testing.T) (*Root, string) {
 	return r, dir
 }
 
-func TestResolveAllowsPathsInsideRoot(t *testing.T) {
-	r, _ := newTestRoot(t)
-
-	for _, in := range []string{"", "/", "docs", "/docs", "docs/a.txt", "./docs/a.txt", "docs//a.txt"} {
-		if _, err := r.Resolve(in); err != nil {
-			t.Errorf("Resolve(%q) = %v, want success", in, err)
+func TestClean(t *testing.T) {
+	cases := map[string]string{
+		"":                        ".",
+		"/":                       ".",
+		"docs":                    "docs",
+		"/docs/a.txt":             "docs/a.txt",
+		"./docs//a.txt":           "docs/a.txt",
+		"../":                     ".",
+		"../../etc/passwd":        "etc/passwd",
+		"docs/../../..":           ".",
+		"/../../../../etc/shadow": "etc/shadow",
+		`..\..\windows\system32`:  "windows/system32",
+	}
+	for in, want := range cases {
+		if got := Clean(in); got != want {
+			t.Errorf("Clean(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
 
-func TestResolveBlocksTraversal(t *testing.T) {
+func TestOpenInsideRoot(t *testing.T) {
 	r, _ := newTestRoot(t)
-
-	attacks := []string{
-		"../",
-		"../../etc/passwd",
-		"docs/../../..",
-		"/../../../../etc/shadow",
-		`..\..\windows\system32`,
-		"docs/../../outside.txt",
-	}
-	for _, in := range attacks {
-		got, err := r.Resolve(in)
-		if err == nil {
-			// Clean() may neutralise some of these into the root itself,
-			// which is safe; what matters is that nothing lands outside.
-			if !within(r.Path(), got) {
-				t.Errorf("Resolve(%q) = %q, which escapes root %q", in, got, r.Path())
-			}
+	for _, in := range []string{"docs/a.txt", "/docs/a.txt", "../docs/a.txt"} {
+		f, err := r.FS().Open(Clean(in))
+		if err != nil {
+			t.Errorf("Open(%q) = %v, want success", in, err)
 			continue
 		}
-		if !errors.Is(err, ErrEscape) {
-			t.Errorf("Resolve(%q) = %v, want ErrEscape", in, err)
-		}
+		f.Close()
 	}
 }
 
-func TestResolveBlocksSymlinkEscape(t *testing.T) {
+// The realistic NAS case: someone drops a symlink into the share that
+// points at a dataset the app was never meant to serve.
+func TestSymlinkEscapeIsBlocked(t *testing.T) {
 	r, dir := newTestRoot(t)
 
 	outside := t.TempDir()
-	secret := filepath.Join(outside, "secret.txt")
-	if err := os.WriteFile(secret, []byte("classified"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("classified"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "escape")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(dir, "docs", "link.txt")); err != nil {
 		t.Fatal(err)
 	}
 
-	// The realistic NAS case: someone drops a symlink into the share that
-	// points at a dataset the app was never meant to serve.
-	link := filepath.Join(dir, "escape")
-	if err := os.Symlink(outside, link); err != nil {
+	for _, p := range []string{"escape/secret.txt", "docs/link.txt"} {
+		if f, err := r.FS().Open(Clean(p)); err == nil {
+			f.Close()
+			t.Errorf("Open(%q) followed a symlink out of the root", p)
+		} else if !errors.Is(Err(err), ErrEscape) {
+			t.Errorf("Open(%q) = %v, want ErrEscape", p, err)
+		}
+	}
+	if err := r.FS().WriteFile(Clean("escape/planted.txt"), []byte("x"), 0o644); err == nil {
+		t.Error("write through an escaping symlink succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "planted.txt")); err == nil {
+		t.Error("file landed outside the root")
+	}
+}
+
+// A symlink that stays inside the share is fine to follow.
+func TestSymlinkInsideRootWorks(t *testing.T) {
+	r, dir := newTestRoot(t)
+	if err := os.Symlink("docs", filepath.Join(dir, "alias")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	f, err := r.FS().Open("alias/a.txt")
+	if err != nil {
+		t.Fatalf("Open via in-root symlink: %v", err)
+	}
+	f.Close()
+}
+
+// The race the old check-then-use design lost: a directory that was fine
+// when the request arrived is swapped for a symlink before the write.
+func TestDirectorySwappedForSymlink(t *testing.T) {
+	r, dir := newTestRoot(t)
+	outside := t.TempDir()
+
+	if _, err := r.FS().Stat("docs"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(dir, "docs")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "docs")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	if _, err := r.Resolve("escape/secret.txt"); !errors.Is(err, ErrEscape) {
-		t.Errorf("symlink traversal allowed: err = %v, want ErrEscape", err)
+	if err := r.FS().WriteFile("docs/planted.txt", []byte("x"), 0o644); err == nil {
+		t.Error("write followed the swapped-in symlink")
 	}
-	if _, err := r.Resolve("escape"); !errors.Is(err, ErrEscape) {
-		t.Errorf("symlinked directory allowed: err = %v, want ErrEscape", err)
-	}
-}
-
-func TestResolveAllowsNonexistentTargetForCreation(t *testing.T) {
-	r, _ := newTestRoot(t)
-
-	// Upload and mkdir resolve a path that does not exist yet; this must
-	// succeed while still being bounded by the root.
-	got, err := r.Resolve("docs/new/deep/file.txt")
-	if err != nil {
-		t.Fatalf("Resolve of new path failed: %v", err)
-	}
-	if !within(r.Path(), got) {
-		t.Errorf("new path %q escapes root", got)
-	}
-
-	// A leading ".." on a path that does not exist yet is clamped into the
-	// root by Clean rather than rejected. Either outcome is safe; what must
-	// never happen is a resolved path outside the root.
-	clamped, err := r.Resolve("../new/outside.txt")
-	if err != nil {
-		if !errors.Is(err, ErrEscape) {
-			t.Errorf("unexpected error: %v", err)
-		}
-		return
-	}
-	if !within(r.Path(), clamped) {
-		t.Errorf("Resolve escaped to %q, outside root %q", clamped, r.Path())
-	}
-}
-
-func TestRel(t *testing.T) {
-	r, _ := newTestRoot(t)
-
-	abs, err := r.Resolve("docs/a.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := r.Rel(abs); got != "docs/a.txt" {
-		t.Errorf("Rel = %q, want docs/a.txt", got)
-	}
-	if got := r.Rel(r.Path()); got != "" {
-		t.Errorf("Rel(root) = %q, want empty", got)
+	if _, err := os.Stat(filepath.Join(outside, "planted.txt")); err == nil {
+		t.Fatal("file landed outside the root")
 	}
 }

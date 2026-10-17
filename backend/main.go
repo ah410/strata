@@ -155,14 +155,9 @@ func handleRaw(w http.ResponseWriter, r *http.Request) {
 // serveFile streams a file, honouring Range requests so video scrubbing and
 // PDF page jumps work without downloading the whole file.
 func serveFile(w http.ResponseWriter, r *http.Request, rel string, attach bool) {
-	abs, err := root.Resolve(rel)
+	f, err := root.FS().Open(safepath.Clean(rel))
 	if err != nil {
-		fail(w, err)
-		return
-	}
-	f, err := os.Open(abs)
-	if err != nil {
-		fail(w, err)
+		fail(w, safepath.Err(err))
 		return
 	}
 	defer f.Close()
@@ -173,7 +168,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, rel string, attach bool) 
 		return
 	}
 
-	name := filepath.Base(abs)
+	name := path.Base(safepath.Clean(rel))
 	w.Header().Set("Content-Type", web.RawHeaders(w, filepath.Ext(name), mime.TypeByExtension(filepath.Ext(name))))
 	disp := "inline"
 	if attach {
@@ -190,14 +185,9 @@ func serveFile(w http.ResponseWriter, r *http.Request, rel string, attach bool) 
 func handleText(w http.ResponseWriter, r *http.Request) {
 	const limit = 2 << 20 // 2 MiB
 
-	abs, err := root.Resolve(r.URL.Query().Get("path"))
+	f, err := root.FS().Open(safepath.Clean(r.URL.Query().Get("path")))
 	if err != nil {
-		fail(w, err)
-		return
-	}
-	f, err := os.Open(abs)
-	if err != nil {
-		fail(w, err)
+		fail(w, safepath.Err(err))
 		return
 	}
 	defer f.Close()
@@ -218,12 +208,7 @@ func handleText(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleSheetRead(w http.ResponseWriter, r *http.Request) {
-	abs, err := root.Resolve(r.URL.Query().Get("path"))
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	grid, err := sheet.Read(abs, r.URL.Query().Get("sheet"))
+	grid, err := sheet.Read(root, r.URL.Query().Get("path"), r.URL.Query().Get("sheet"))
 	if err != nil {
 		fail(w, err)
 		return
@@ -233,19 +218,15 @@ func handleSheetRead(w http.ResponseWriter, r *http.Request) {
 
 func handleSheetWrite(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Path  string       `json:"path"`
-		Sheet string       `json:"sheet"`
-		Edits []sheet.Edit `json:"edits"`
+		Path    string       `json:"path"`
+		Sheet   string       `json:"sheet"`
+		Version string       `json:"version"`
+		Edits   []sheet.Edit `json:"edits"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	abs, err := root.Resolve(req.Path)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	grid, err := sheet.Write(abs, req.Sheet, req.Edits)
+	grid, err := sheet.Write(root, req.Path, req.Sheet, req.Version, req.Edits)
 	if err != nil {
 		fail(w, err)
 		return
@@ -282,7 +263,12 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 
 		// Trust only the base name; browsers may send a full path for
 		// directory uploads and we do not want to honour it blindly.
-		name := filepath.Base(part.FileName())
+		name := filepath.Base(strings.ReplaceAll(part.FileName(), "\\", "/"))
+		if name == "." || name == ".." || name == "/" {
+			part.Close()
+			fail(w, userr.Error("invalid file name"))
+			return
+		}
 		dest := path.Join(dir, name)
 
 		err = fileops.Save(root, dest, part)
@@ -431,6 +417,8 @@ func fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, os.ErrPermission):
 		log.Printf("error: %v", err)
 		http.Error(w, "permission denied", http.StatusForbidden)
+	case errors.Is(err, sheet.ErrConflict):
+		http.Error(w, err.Error(), http.StatusConflict)
 	case errors.As(err, new(*http.MaxBytesError)):
 		http.Error(w, "too large", http.StatusRequestEntityTooLarge)
 	case errors.As(err, new(userr.Error)):

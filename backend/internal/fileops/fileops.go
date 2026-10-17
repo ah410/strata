@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"strata/internal/safepath"
@@ -39,12 +40,14 @@ type Listing struct {
 // List returns the contents of dir, directories first then files, each group
 // sorted case-insensitively by name.
 func List(root *safepath.Root, rel string) (*Listing, error) {
-	abs, err := root.Resolve(rel)
+	rel = safepath.Clean(rel)
+	d, err := root.FS().Open(rel)
 	if err != nil {
-		return nil, err
+		return nil, safepath.Err(err)
 	}
+	defer d.Close()
 
-	info, err := os.Stat(abs)
+	info, err := d.Stat()
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +55,7 @@ func List(root *safepath.Root, rel string) (*Listing, error) {
 		return nil, userr.Error("not a directory")
 	}
 
-	dirents, err := os.ReadDir(abs)
+	dirents, err := d.ReadDir(-1)
 	if err != nil {
 		return nil, err
 	}
@@ -66,20 +69,22 @@ func List(root *safepath.Root, rel string) (*Listing, error) {
 			continue
 		}
 
-		fi, err := de.Info()
+		p := apiPath(path.Join(rel, name))
+		// Stat through the root, not de.Info(), so the lookup is bounded too.
+		fi, err := root.FS().Lstat(path.Join(rel, name))
 		if err != nil {
-			// A file can vanish between ReadDir and Info. Skip it rather
+			// A file can vanish between ReadDir and Lstat. Skip it rather
 			// than failing the whole listing.
 			continue
 		}
 
 		entries = append(entries, Entry{
 			Name:     name,
-			Path:     path.Join(rel, name),
-			IsDir:    de.IsDir(),
+			Path:     p,
+			IsDir:    fi.IsDir(),
 			Size:     fi.Size(),
 			Modified: fi.ModTime(),
-			Kind:     classify(name, de.IsDir()),
+			Kind:     classify(name, fi.IsDir()),
 		})
 	}
 
@@ -90,7 +95,15 @@ func List(root *safepath.Root, rel string) (*Listing, error) {
 		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
 	})
 
-	return &Listing{Path: rel, Entries: entries}, nil
+	return &Listing{Path: apiPath(rel), Entries: entries}, nil
+}
+
+// apiPath is the form the UI speaks: "" for the root, no leading slash.
+func apiPath(rel string) string {
+	if rel == "." {
+		return ""
+	}
+	return rel
 }
 
 // classify buckets a filename into a coarse kind the UI uses to pick an icon
@@ -128,137 +141,151 @@ func classify(name string, isDir bool) string {
 
 // Mkdir creates a directory, including any missing parents.
 func Mkdir(root *safepath.Root, rel string) error {
-	abs, err := root.Resolve(rel)
-	if err != nil {
-		return err
-	}
-	if _, err := os.Stat(abs); err == nil {
+	rel = safepath.Clean(rel)
+	if _, err := root.FS().Lstat(rel); err == nil {
 		return userr.Error("already exists")
 	}
-	return os.MkdirAll(abs, 0o755)
+	return safepath.Err(root.FS().MkdirAll(rel, 0o755))
 }
 
-// Move renames or relocates a path. Both ends are resolved through the root,
-// so a move cannot be used to write outside the share.
+// Move renames or relocates a path. Both ends are bounded by the root, so a
+// move cannot be used to write outside the share.
 func Move(root *safepath.Root, fromRel, toRel string) error {
-	from, err := root.Resolve(fromRel)
-	if err != nil {
-		return err
+	from, to := safepath.Clean(fromRel), safepath.Clean(toRel)
+	if from == "." || to == "." {
+		return userr.Error("cannot move the share root")
 	}
-	to, err := root.Resolve(toRel)
-	if err != nil {
-		return err
-	}
-	if _, err := os.Stat(to); err == nil {
+	if _, err := root.FS().Lstat(to); err == nil {
 		return userr.Error("destination already exists")
 	}
-	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
-		return err
+	if err := root.FS().MkdirAll(path.Dir(to), 0o755); err != nil {
+		return safepath.Err(err)
 	}
-	// Rename fails across filesystems, which happens when the user drags a
-	// file between two differently-mounted datasets. Fall back to copy+remove.
-	if err := os.Rename(from, to); err != nil {
-		if copyErr := copyTree(from, to); copyErr != nil {
-			return copyErr
+	err := root.FS().Rename(from, to)
+	// Rename fails across filesystems, which happens when the user moves a
+	// file between nested datasets. Only then fall back to copy+remove.
+	if errors.Is(err, syscall.EXDEV) {
+		if err := copyTree(root, from, to); err != nil {
+			return safepath.Err(err)
 		}
-		return os.RemoveAll(from)
+		return safepath.Err(root.FS().RemoveAll(from))
 	}
-	return nil
+	return safepath.Err(err)
 }
 
 // Copy duplicates a file or directory tree.
 func Copy(root *safepath.Root, fromRel, toRel string) error {
-	from, err := root.Resolve(fromRel)
-	if err != nil {
-		return err
-	}
-	to, err := root.Resolve(toRel)
-	if err != nil {
-		return err
-	}
-	if _, err := os.Stat(to); err == nil {
+	from, to := safepath.Clean(fromRel), safepath.Clean(toRel)
+	if to == "." {
 		return userr.Error("destination already exists")
 	}
-	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
-		return err
+	info, err := root.FS().Lstat(from)
+	if err != nil {
+		return safepath.Err(err)
 	}
-	return copyTree(from, to)
+	if !info.IsDir() && !info.Mode().IsRegular() {
+		return userr.Error("only files and folders can be copied")
+	}
+	if _, err := root.FS().Lstat(to); err == nil {
+		return userr.Error("destination already exists")
+	}
+	if err := root.FS().MkdirAll(path.Dir(to), 0o755); err != nil {
+		return safepath.Err(err)
+	}
+	return safepath.Err(copyTree(root, from, to))
 }
 
-func copyTree(from, to string) error {
-	info, err := os.Stat(from)
+// copyTree copies regular files and directories. Symlinks are skipped, never
+// followed: a link inside the share must not pull outside content in.
+func copyTree(root *safepath.Root, from, to string) error {
+	info, err := root.FS().Lstat(from)
 	if err != nil {
 		return err
 	}
-	if !info.IsDir() {
-		return copyFile(from, to, info.Mode())
+	switch {
+	case info.Mode().IsRegular():
+		return copyFile(root, from, to, info.Mode().Perm())
+	case !info.IsDir():
+		return nil // symlink, device, socket: not ours to copy
 	}
-	if err := os.MkdirAll(to, info.Mode()); err != nil {
+	if err := root.FS().MkdirAll(to, info.Mode().Perm()|0o700); err != nil {
 		return err
 	}
-	ents, err := os.ReadDir(from)
+	d, err := root.FS().Open(from)
 	if err != nil {
 		return err
 	}
-	for _, e := range ents {
-		if err := copyTree(filepath.Join(from, e.Name()), filepath.Join(to, e.Name())); err != nil {
+	names, err := d.Readdirnames(-1)
+	d.Close()
+	if err != nil {
+		return err
+	}
+	for _, n := range names {
+		if err := copyTree(root, path.Join(from, n), path.Join(to, n)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func copyFile(from, to string, mode os.FileMode) error {
-	src, err := os.Open(from)
+func copyFile(root *safepath.Root, from, to string, mode os.FileMode) error {
+	src, err := root.FS().Open(from)
 	if err != nil {
 		return err
 	}
 	defer src.Close()
 
-	dst, err := os.OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	// O_EXCL: never write through something that appeared at the target.
+	dst, err := root.FS().OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return err
 	}
-	defer dst.Close()
-
-	_, err = io.Copy(dst, src)
-	return err
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		return err
+	}
+	return dst.Close()
 }
 
-// Delete removes a file or directory tree.
+// Delete removes a file or directory tree. RemoveAll does not follow
+// symlinks, so deleting a link removes the link only.
 func Delete(root *safepath.Root, rel string) error {
-	abs, err := root.Resolve(rel)
-	if err != nil {
-		return err
-	}
-	// Refuse to delete the share root itself.
-	if abs == root.Path() {
+	rel = safepath.Clean(rel)
+	if rel == "." {
 		return userr.Error("refusing to delete root")
 	}
-	return os.RemoveAll(abs)
+	return safepath.Err(root.FS().RemoveAll(rel))
 }
 
 // Save writes r to rel, creating parent directories as needed. An existing
 // file is replaced atomically via a temp file in the same directory, so a
 // failed or interrupted write never truncates the original.
 func Save(root *safepath.Root, rel string, r io.Reader) error {
-	abs, err := root.Resolve(rel)
-	if err != nil {
+	return WriteAtomic(root, rel, func(w io.Writer) error {
+		_, err := io.Copy(w, r)
 		return err
+	})
+}
+
+// WriteAtomic creates rel's contents through write, then renames the result
+// into place. Readers see either the old file or the complete new one.
+func WriteAtomic(root *safepath.Root, rel string, write func(io.Writer) error) error {
+	rel = safepath.Clean(rel)
+	if rel == "." {
+		return userr.Error("invalid file name")
 	}
-	dir := filepath.Dir(abs)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+	dir := path.Dir(rel)
+	if err := root.FS().MkdirAll(dir, 0o755); err != nil {
+		return safepath.Err(err)
 	}
 
-	tmp, err := createTemp(dir)
+	tmp, tmpName, err := createTemp(root, dir)
 	if err != nil {
-		return err
+		return safepath.Err(err)
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op once the rename succeeds
+	defer root.FS().Remove(tmpName) // no-op once the rename succeeds
 
-	if _, err := io.Copy(tmp, r); err != nil {
+	if err := write(tmp); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -269,25 +296,25 @@ func Save(root *safepath.Root, rel string, r io.Reader) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, abs)
+	return safepath.Err(root.FS().Rename(tmpName, rel))
 }
 
 // createTemp opens a new hidden temp file in dir with its final mode, so no
 // chmod is needed later (ZFS aclmode=restricted rejects chmod on ACL files).
-func createTemp(dir string) (*os.File, error) {
+func createTemp(root *safepath.Root, dir string) (*os.File, string, error) {
 	for range 10 {
 		var b [8]byte
 		if _, err := rand.Read(b[:]); err != nil {
-			return nil, err
+			return nil, "", err
 		}
-		name := filepath.Join(dir, ".strata-"+hex.EncodeToString(b[:]))
-		f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
+		name := path.Join(dir, ".strata-"+hex.EncodeToString(b[:]))
+		f, err := root.FS().OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
 		if errors.Is(err, os.ErrExist) {
 			continue
 		}
-		return f, err
+		return f, name, err
 	}
-	return nil, fmt.Errorf("createTemp: no unique name in %s", dir)
+	return nil, "", fmt.Errorf("createTemp: no unique name in %s", dir)
 }
 
 // DiskUsage reports the total and free bytes of the filesystem holding root.
