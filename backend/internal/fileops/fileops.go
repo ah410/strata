@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"strata/internal/safepath"
+	"strata/internal/userr"
 )
 
 // Entry is one row in a directory listing.
@@ -48,7 +49,7 @@ func List(root *safepath.Root, rel string) (*Listing, error) {
 		return nil, err
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("not a directory")
+		return nil, userr.Error("not a directory")
 	}
 
 	dirents, err := os.ReadDir(abs)
@@ -132,7 +133,7 @@ func Mkdir(root *safepath.Root, rel string) error {
 		return err
 	}
 	if _, err := os.Stat(abs); err == nil {
-		return errors.New("already exists")
+		return userr.Error("already exists")
 	}
 	return os.MkdirAll(abs, 0o755)
 }
@@ -149,7 +150,7 @@ func Move(root *safepath.Root, fromRel, toRel string) error {
 		return err
 	}
 	if _, err := os.Stat(to); err == nil {
-		return errors.New("destination already exists")
+		return userr.Error("destination already exists")
 	}
 	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
 		return err
@@ -176,7 +177,7 @@ func Copy(root *safepath.Root, fromRel, toRel string) error {
 		return err
 	}
 	if _, err := os.Stat(to); err == nil {
-		return errors.New("destination already exists")
+		return userr.Error("destination already exists")
 	}
 	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
 		return err
@@ -232,7 +233,7 @@ func Delete(root *safepath.Root, rel string) error {
 	}
 	// Refuse to delete the share root itself.
 	if abs == root.Path() {
-		return errors.New("refusing to delete root")
+		return userr.Error("refusing to delete root")
 	}
 	return os.RemoveAll(abs)
 }

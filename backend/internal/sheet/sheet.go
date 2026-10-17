@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/xuri/excelize/v2"
+
+	"strata/internal/userr"
 )
 
 // Guard rails. A NAS will eventually be asked to open a 200k-row export, and
@@ -88,7 +90,7 @@ func Read(path, active string) (*Grid, error) {
 
 	names := f.GetSheetList()
 	if len(names) == 0 {
-		return nil, fmt.Errorf("workbook has no sheets")
+		return nil, userr.Error("workbook has no sheets")
 	}
 	if active == "" || !contains(names, active) {
 		active = names[0]
@@ -323,12 +325,12 @@ func Write(path, sheetName string, edits []Edit) (*Grid, error) {
 	defer f.Close()
 
 	if !contains(f.GetSheetList(), sheetName) {
-		return nil, fmt.Errorf("no such sheet: %s", sheetName)
+		return nil, userr.Error(fmt.Sprintf("no such sheet: %s", sheetName))
 	}
 
 	for _, e := range edits {
 		if _, _, err := excelize.CellNameToCoordinates(e.Ref); err != nil {
-			return nil, fmt.Errorf("bad cell reference %q", e.Ref)
+			return nil, userr.Error(fmt.Sprintf("bad cell reference %q", e.Ref))
 		}
 
 		if strings.HasPrefix(e.Value, "=") {

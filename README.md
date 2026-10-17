@@ -143,6 +143,7 @@ better for heavy work.
 | `STRATA_ROOT` | `/data` | Directory to serve. Leave it alone; change the volume instead. |
 | `STRATA_ADDR` | `:8080` | Listen address. |
 | `STRATA_NAME` | `Strata` | Name shown in the sidebar. |
+| `STRATA_ALLOWED_HOSTS` | *(empty)* | Comma-separated hostnames you open Strata by, e.g. `strata.example.com`. IP addresses and `localhost` always work; any other `Host` is refused, which blocks DNS-rebinding attacks. |
 | `TZ` | `America/Phoenix` | Zone for displayed timestamps. |
 
 ### Which user it runs as

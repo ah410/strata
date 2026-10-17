@@ -103,10 +103,13 @@ export default function App() {
   }, [path]);
 
   const upload = async (files: FileList | File[]) => {
+    // Copy now: the file input is cleared right after this call, which
+    // empties a live FileList before the upload finishes.
+    const list = Array.from(files);
     setUploadPct(0);
     try {
-      await api.upload(path, files, setUploadPct);
-      toast(`Uploaded ${Array.from(files).length} file${Array.from(files).length === 1 ? "" : "s"}`);
+      await api.upload(path, list, setUploadPct);
+      toast(`Uploaded ${list.length} file${list.length === 1 ? "" : "s"}`);
       refresh();
     } catch (e) {
       toast((e as Error).message, true);

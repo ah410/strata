@@ -25,6 +25,8 @@ import (
 	"strata/internal/fileops"
 	"strata/internal/safepath"
 	"strata/internal/sheet"
+	"strata/internal/userr"
+	"strata/internal/web"
 )
 
 //go:embed all:dist
@@ -45,6 +47,9 @@ func main() {
 		dir  = flag.String("root", envOr("STRATA_ROOT", "/data"), "directory to serve")
 		addr = flag.String("addr", envOr("STRATA_ADDR", ":8080"), "listen address")
 		name = flag.String("name", envOr("STRATA_NAME", "Strata"), "display name")
+		// Hostnames (no port) the UI is reached by, e.g. strata.example.com.
+		// IP addresses and localhost always work; anything else is refused.
+		hosts = flag.String("allowed-hosts", envOr("STRATA_ALLOWED_HOSTS", ""), "comma-separated hostnames")
 	)
 	flag.Parse()
 
@@ -55,10 +60,23 @@ func main() {
 	root = r
 	log.Printf("serving %s on %s", root.Path(), *addr)
 
+	srv := &http.Server{
+		Addr:              *addr,
+		Handler:           logRequests(newHandler(*name, strings.Split(*hosts, ","))),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    64 << 10,
+		// No write timeout: large downloads and uploads legitimately run long.
+	}
+	log.Fatal(srv.ListenAndServe())
+}
+
+// newHandler builds the routes behind the request guards.
+func newHandler(name string, hosts []string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]any{"ok": true, "name": *name})
+		writeJSON(w, map[string]any{"ok": true, "name": name})
 	})
 	mux.HandleFunc("GET /api/list", handleList)
 	mux.HandleFunc("GET /api/usage", handleUsage)
@@ -74,13 +92,7 @@ func main() {
 	mux.HandleFunc("POST /api/delete", handleDelete)
 	mux.HandleFunc("/", handleStatic)
 
-	srv := &http.Server{
-		Addr:              *addr,
-		Handler:           logRequests(mux),
-		ReadHeaderTimeout: 10 * time.Second,
-		// No write timeout: large downloads and uploads legitimately run long.
-	}
-	log.Fatal(srv.ListenAndServe())
+	return web.Guard(mux, hosts)
 }
 
 // healthcheck probes the local server for the container HEALTHCHECK, since
@@ -162,9 +174,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, rel string, attach bool) 
 	}
 
 	name := filepath.Base(abs)
-	if ct := mime.TypeByExtension(filepath.Ext(name)); ct != "" {
-		w.Header().Set("Content-Type", ct)
-	}
+	w.Header().Set("Content-Type", web.RawHeaders(w, filepath.Ext(name), mime.TypeByExtension(filepath.Ext(name))))
 	disp := "inline"
 	if attach {
 		disp = "attachment"
@@ -227,8 +237,7 @@ func handleSheetWrite(w http.ResponseWriter, r *http.Request) {
 		Sheet string       `json:"sheet"`
 		Edits []sheet.Edit `json:"edits"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
-		http.Error(w, "bad request body", http.StatusBadRequest)
+	if !decode(w, r, &req) {
 		return
 	}
 	abs, err := root.Resolve(req.Path)
@@ -247,6 +256,9 @@ func handleSheetWrite(w http.ResponseWriter, r *http.Request) {
 func handleUpload(w http.ResponseWriter, r *http.Request) {
 	dir := r.URL.Query().Get("path")
 
+	// Cap the whole request; exceeding it fails the write instead of
+	// silently truncating the file.
+	r.Body = http.MaxBytesReader(w, r.Body, maxUpload)
 	reader, err := r.MultipartReader()
 	if err != nil {
 		http.Error(w, "expected multipart body", http.StatusBadRequest)
@@ -273,7 +285,7 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 		name := filepath.Base(part.FileName())
 		dest := path.Join(dir, name)
 
-		err = fileops.Save(root, dest, io.LimitReader(part, maxUpload))
+		err = fileops.Save(root, dest, part)
 		part.Close()
 		if err != nil {
 			fail(w, err)
@@ -389,7 +401,12 @@ func handleStatic(w http.ResponseWriter, r *http.Request) {
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(v); err != nil {
+	// A JSON-only API can't be hit by a cross-site form or text/plain fetch.
+	if ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); ct != "application/json" {
+		http.Error(w, "expected application/json", http.StatusUnsupportedMediaType)
+		return false
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(v); err != nil {
 		http.Error(w, "bad request body", http.StatusBadRequest)
 		return false
 	}
@@ -414,9 +431,14 @@ func fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, os.ErrPermission):
 		log.Printf("error: %v", err)
 		http.Error(w, "permission denied", http.StatusForbidden)
-	default:
-		log.Printf("error: %v", err)
+	case errors.As(err, new(*http.MaxBytesError)):
+		http.Error(w, "too large", http.StatusRequestEntityTooLarge)
+	case errors.As(err, new(userr.Error)):
 		http.Error(w, err.Error(), http.StatusBadRequest)
+	default:
+		// OS errors carry host paths; keep them in the log only.
+		log.Printf("error: %v", err)
+		http.Error(w, "request failed", http.StatusBadRequest)
 	}
 }
 
