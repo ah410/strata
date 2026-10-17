@@ -6,6 +6,8 @@ A small file manager for a TrueNAS share. Browse, upload, preview, and edit
 Single Go binary with the UI embedded. ~25 MB image, no database, no state
 of its own.
 
+Created with Claude as a POC.
+
 ---
 
 ## ⚠️ Read this first
