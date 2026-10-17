@@ -385,6 +385,7 @@ func fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, os.ErrNotExist):
 		http.Error(w, "not found", http.StatusNotFound)
 	case errors.Is(err, os.ErrPermission):
+		log.Printf("error: %v", err)
 		http.Error(w, "permission denied", http.StatusForbidden)
 	default:
 		log.Printf("error: %v", err)

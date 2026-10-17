@@ -4,6 +4,8 @@
 package fileops
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -248,7 +250,7 @@ func Save(root *safepath.Root, rel string, r io.Reader) error {
 		return err
 	}
 
-	tmp, err := os.CreateTemp(dir, ".strata-*")
+	tmp, err := createTemp(dir)
 	if err != nil {
 		return err
 	}
@@ -266,10 +268,25 @@ func Save(root *safepath.Root, rel string, r io.Reader) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
-		return err
-	}
 	return os.Rename(tmpName, abs)
+}
+
+// createTemp opens a new hidden temp file in dir with its final mode, so no
+// chmod is needed later (ZFS aclmode=restricted rejects chmod on ACL files).
+func createTemp(dir string) (*os.File, error) {
+	for range 10 {
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return nil, err
+		}
+		name := filepath.Join(dir, ".strata-"+hex.EncodeToString(b[:]))
+		f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		return f, err
+	}
+	return nil, fmt.Errorf("createTemp: no unique name in %s", dir)
 }
 
 // DiskUsage reports the total and free bytes of the filesystem holding root.
