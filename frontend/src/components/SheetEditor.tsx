@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type Cell, type Entry, type Grid } from "../lib/api";
 import { colName } from "../lib/format";
+import { isDark, luminance, readableOn, setScopeTheme, themeVars, useScopeTheme } from "../lib/themes";
+import { ThemeSelect } from "./Appearance";
 
 type SaveState = "idle" | "saving" | "saved" | "failed";
 
@@ -19,6 +21,8 @@ export function SheetEditor({ entry, onClose }: { entry: Entry; onClose: () => v
   const [draft, setDraft] = useState<string | null>(null);
   const [save, setSave] = useState<SaveState>("idle");
 
+  const theme = useScopeTheme("sheet");
+  const dark = isDark(theme);
   const cellInput = useRef<HTMLInputElement>(null);
   const barInput = useRef<HTMLInputElement>(null);
 
@@ -234,7 +238,7 @@ export function SheetEditor({ entry, onClose }: { entry: Entry; onClose: () => v
                           cell?.formula ? "calc" : "",
                           cell?.style?.wrap ? "wrap" : "",
                         ].filter(Boolean).join(" ")}
-                        style={cellStyle(cell)}
+                        style={cellStyle(cell, dark)}
                         onMouseDown={() => {
                           if (!editing) {
                             setDraft(null);
@@ -299,8 +303,15 @@ function Shell({
   onClose: () => void;
   children: React.ReactNode;
 }) {
+  const theme = useScopeTheme("sheet");
   return (
-    <div className="overlay" role="dialog" aria-modal="true" aria-label={entry.name}>
+    <div
+      className="overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={entry.name}
+      style={themeVars(theme) as React.CSSProperties}
+    >
       <div className="overlay-bar">
         <button className="btn btn-icon" onClick={onClose} aria-label="Close workbook">
           ✕
@@ -308,6 +319,8 @@ function Shell({
         <div className="overlay-title">
           <strong>{entry.name}</strong>
         </div>
+        <ThemeSelect compact label="Theme for spreadsheets" value={theme}
+          onChange={(id) => setScopeTheme("sheet", id)} />
         <a className="btn" href={api.downloadUrl(entry.path)} download>
           Download
         </a>
@@ -327,14 +340,24 @@ function ptToPx(h: number | undefined): number {
   return Math.max(22, Math.round((h ?? 15) * 1.34));
 }
 
-function cellStyle(cell: Cell | undefined): React.CSSProperties {
+/**
+ * Workbook colours assume a white page. On a dark theme, drop white fills and
+ * near-black text so they don't glare or vanish; any fill that stays gets text
+ * that is readable on it.
+ */
+function cellStyle(cell: Cell | undefined, dark: boolean): React.CSSProperties {
   const s = cell?.style;
   if (!s) return {};
+  let fill = s.fill || undefined;
+  let color = s.color || undefined;
+  if (dark && fill && luminance(fill) > 0.85) fill = undefined;
+  if (dark && !fill && color && luminance(color) < 0.05) color = undefined;
+  if (fill && !color) color = readableOn(fill);
   return {
     fontWeight: s.bold ? 600 : undefined,
     fontStyle: s.italic ? "italic" : undefined,
-    color: s.color || undefined,
-    background: s.fill || undefined,
+    color,
+    background: fill,
     textAlign: (s.align as React.CSSProperties["textAlign"]) || undefined,
     fontSize: s.size ? `${Math.min(s.size, 20)}px` : undefined,
     fontFamily: s.family?.includes("Courier") ? "var(--mono)" : undefined,

@@ -5,6 +5,7 @@ import { Capacity } from "./components/Capacity";
 import { Glyph } from "./components/Glyph";
 import { Preview, canPreview } from "./components/Preview";
 import { SheetEditor } from "./components/SheetEditor";
+import { AppearanceDialog } from "./components/Appearance";
 
 type SortKey = "name" | "size" | "modified" | "kind";
 type Note = { text: string; error?: boolean } | null;
@@ -22,6 +23,7 @@ export default function App() {
   const [uploadPct, setUploadPct] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
 
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -164,6 +166,17 @@ export default function App() {
             <rect x="1.5" y="10.1" width="13" height="3.4" rx="1" fill="var(--k-video)" opacity=".55" />
           </svg>
           <span className="wordmark">Strata</span>
+          <button
+            className="btn btn-icon"
+            onClick={() => setAppearanceOpen(true)}
+            aria-label="Appearance"
+            title="Appearance"
+          >
+            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.4" />
+              <path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor" />
+            </svg>
+          </button>
         </div>
 
         <nav className="rail-nav">
@@ -336,6 +349,8 @@ export default function App() {
         <SheetEditor entry={open} onClose={() => { setOpen(null); refresh(); }} />
       )}
       {open && open.kind !== "sheet" && <Preview entry={open} onClose={() => setOpen(null)} />}
+
+      {appearanceOpen && <AppearanceDialog onClose={() => setAppearanceOpen(false)} />}
 
       {prompt && (
         <Dialog
