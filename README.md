@@ -145,17 +145,21 @@ better for heavy work.
 | `STRATA_NAME` | `Strata` | Name shown in the sidebar. |
 | `TZ` | `America/Phoenix` | Zone for displayed timestamps. |
 
-### Running as a non-root user
+### Which user it runs as
 
-By default the container runs as root so it can read files owned by any user.
-To restrict it, find who owns your dataset:
+The image never runs as root. By default it uses the distroless `nonroot`
+user (uid 65532), which usually has no access to your dataset, so set
+`user:` in the compose file to an account that does.
 
-```bash
-ls -n /mnt/tank/documents
+On TrueNAS the cleanest setup is a dedicated `strata` user with no login
+access, given a **Modify** entry with **Inherit** on the dataset's ACL. Then:
+
+```yaml
+user: "3001:3001"   # uid:gid from `id strata`
 ```
 
-then uncomment and set `user: "1000:1000"` in the compose file. If uploads
-start failing afterwards, that uid lacks write permission on the dataset.
+If uploads fail with "permission denied", that uid lacks write permission on
+the dataset. The container logs show the exact path.
 
 ---
 
