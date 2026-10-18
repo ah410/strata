@@ -1,6 +1,8 @@
 module strata
 
-go 1.26.0
+go 1.26.9
+
+toolchain go1.27.2
 
 require (
 	github.com/xuri/excelize/v2 v2.11.0
