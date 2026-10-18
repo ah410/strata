@@ -102,6 +102,23 @@ func List(root *safepath.Root, rel string) (*Listing, error) {
 	return &Listing{Path: apiPath(rel), Entries: entries}, nil
 }
 
+// Stat describes one path the way List would.
+func Stat(root *safepath.Root, rel string) (Entry, error) {
+	rel, err := safepath.User(rel)
+	if err != nil {
+		return Entry{}, err
+	}
+	if rel == "." {
+		return Entry{}, userr.Error("not a file")
+	}
+	fi, err := root.FS().Lstat(rel)
+	if err != nil {
+		return Entry{}, safepath.Err(err)
+	}
+	name := path.Base(rel)
+	return Entry{Name: name, Path: rel, IsDir: fi.IsDir(), Size: fi.Size(), Modified: fi.ModTime(), Kind: classify(name, fi.IsDir())}, nil
+}
+
 // apiPath is the form the UI speaks: "" for the root, no leading slash.
 func apiPath(rel string) string {
 	if rel == "." {

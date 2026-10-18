@@ -33,6 +33,8 @@ import (
 	"strata/internal/fileops"
 	"strata/internal/safepath"
 	"strata/internal/sheet"
+	"strata/internal/state"
+	"strata/internal/thumb"
 	"strata/internal/tlsutil"
 	"strata/internal/userr"
 	"strata/internal/web"
@@ -45,7 +47,11 @@ var embedded embed.FS
 // is generous; the reverse proxy should carry a matching limit.
 const maxUpload = 8 << 30 // 8 GiB
 
-var root *safepath.Root
+var (
+	root     *safepath.Root
+	thumbs   *thumb.Cache
+	appState *state.Store // nil without a config volume
+)
 
 func main() {
 	if len(os.Args) > 1 {
@@ -108,6 +114,10 @@ func main() {
 		log.Fatalf("TLS: %v", err)
 	}
 
+	if err := openCaches(config); err != nil {
+		log.Fatal(err)
+	}
+
 	go sweep(max(*trashDays, 1))
 
 	srv := &http.Server{
@@ -145,6 +155,27 @@ func configDir(explicit string) (string, error) {
 	probe.Close()
 	os.Remove(probe.Name())
 	return dir, nil
+}
+
+// openCaches sets up app state and the thumbnail cache. Without a config
+// volume, thumbnails use a small scratch cache and nothing is remembered.
+func openCaches(config string) error {
+	dir, limit := filepath.Join(tlsutil.ScratchDir(), "thumbs"), int64(32<<20)
+	if config != "" {
+		s, err := state.Open(config)
+		if err != nil {
+			return fmt.Errorf("state: %w", err)
+		}
+		appState = s
+		dir, limit = filepath.Join(config, "thumbs"), 500<<20
+	}
+	c, err := thumb.New(dir, limit)
+	if err != nil {
+		log.Printf("thumbnails off: %v", err)
+		return nil
+	}
+	thumbs = c
+	return nil
 }
 
 // loadGate fails closed: without a usable passphrase hash Strata refuses to
@@ -257,6 +288,11 @@ func newHandler(name string, hosts []string, gate *auth.Gate) http.Handler {
 	mux.HandleFunc("GET /api/download", handleDownload)
 	mux.HandleFunc("GET /api/raw", handleRaw)
 	mux.HandleFunc("GET /api/text", handleText)
+	mux.HandleFunc("POST /api/text", handleTextWrite)
+	mux.HandleFunc("GET /api/thumb", handleThumb)
+	mux.HandleFunc("GET /api/state", handleState)
+	mux.HandleFunc("POST /api/favorite", handleFavorite)
+	mux.HandleFunc("POST /api/recent", handleRecent)
 	mux.HandleFunc("GET /api/sheet", handleSheetRead)
 	mux.HandleFunc("POST /api/sheet", handleSheetWrite)
 	mux.HandleFunc("POST /api/upload", handleUpload)
@@ -456,33 +492,117 @@ func contentDisposition(disp, name string) string {
 // handleText returns a text file's contents, capped so a stray 2 GB log does
 // not take the browser down with it.
 func handleText(w http.ResponseWriter, r *http.Request) {
-	const limit = 2 << 20 // 2 MiB
-
-	rel, err := safepath.User(r.URL.Query().Get("path"))
+	t, err := fileops.ReadText(root, r.URL.Query().Get("path"))
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	f, err := root.FS().Open(rel)
-	if err != nil {
-		fail(w, safepath.Err(err))
+	writeJSON(w, t)
+}
+
+func handleTextWrite(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path    string `json:"path"`
+		Version string `json:"version"`
+		Content string `json:"content"`
+	}
+	if !decode(w, r, &req) {
 		return
 	}
-	defer f.Close()
-
-	buf, err := io.ReadAll(io.LimitReader(f, limit+1))
+	v, err := fileops.WriteText(root, req.Path, req.Version, req.Content)
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	truncated := len(buf) > limit
-	if truncated {
-		buf = buf[:limit]
+	appState.Touch(safepath.Clean(req.Path))
+	writeJSON(w, map[string]any{"version": v})
+}
+
+func handleThumb(w http.ResponseWriter, r *http.Request) {
+	if thumbs == nil {
+		http.Error(w, "no thumbnails", http.StatusNotFound)
+		return
 	}
-	writeJSON(w, map[string]any{
-		"content":   string(buf),
-		"truncated": truncated,
-	})
+	b, ct, err := thumbs.Get(r.Context(), root, r.URL.Query().Get("path"))
+	if errors.Is(err, thumb.ErrUnsupported) {
+		http.Error(w, err.Error(), http.StatusUnsupportedMediaType)
+		return
+	}
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", ct)
+	// The URL carries the mtime, so a changed file gets a new URL.
+	w.Header().Set("Cache-Control", "private, max-age=604800")
+	w.Write(b)
+}
+
+// handleState returns favorites and recent files that still exist.
+func handleState(w http.ResponseWriter, _ *http.Request) {
+	favs, recent := appState.Snapshot()
+	type recentEntry struct {
+		fileops.Entry
+		Opened time.Time `json:"opened"`
+	}
+	out := struct {
+		Enabled   bool            `json:"enabled"`
+		Favorites []fileops.Entry `json:"favorites"`
+		Recent    []recentEntry   `json:"recent"`
+	}{appState.Enabled(), []fileops.Entry{}, []recentEntry{}}
+	for _, p := range favs {
+		if e, err := fileops.Stat(root, p); err == nil {
+			out.Favorites = append(out.Favorites, e)
+		}
+	}
+	for _, rc := range recent {
+		if e, err := fileops.Stat(root, rc.Path); err == nil && !e.IsDir {
+			out.Recent = append(out.Recent, recentEntry{e, rc.Time})
+		}
+	}
+	writeJSON(w, out)
+}
+
+func handleFavorite(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+		On   bool   `json:"on"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	e, err := fileops.Stat(root, req.Path)
+	if err != nil && req.On {
+		fail(w, err)
+		return
+	}
+	p := safepath.Clean(req.Path)
+	if err == nil {
+		p = e.Path
+	}
+	if err := appState.SetFavorite(p, req.On); err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+func handleRecent(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	e, err := fileops.Stat(root, req.Path)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if !e.IsDir {
+		appState.Touch(e.Path)
+	}
+	writeJSON(w, map[string]any{"ok": true})
 }
 
 func handleSheetRead(w http.ResponseWriter, r *http.Request) {
@@ -509,6 +629,7 @@ func handleSheetWrite(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
+	appState.Touch(safepath.Clean(req.Path))
 	writeJSON(w, grid)
 }
 
@@ -720,6 +841,7 @@ func handleMove(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
+	appState.Rename(safepath.Clean(req.From), safepath.Clean(req.To))
 	writeJSON(w, map[string]any{"ok": true})
 }
 
@@ -934,7 +1056,7 @@ func fail(w http.ResponseWriter, err error) {
 		http.Error(w, "permission denied", http.StatusForbidden)
 	case errors.Is(err, fileops.ErrNoTrash):
 		http.Error(w, err.Error(), http.StatusConflict)
-	case errors.Is(err, sheet.ErrConflict):
+	case errors.Is(err, sheet.ErrConflict), errors.Is(err, fileops.ErrConflict):
 		http.Error(w, err.Error(), http.StatusConflict)
 	case errors.As(err, new(*http.MaxBytesError)):
 		http.Error(w, "too large", http.StatusRequestEntityTooLarge)

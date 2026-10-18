@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"strata/internal/safepath"
+	"strata/internal/thumb"
 )
 
 func testServer(t *testing.T) (http.Handler, string) {
@@ -19,6 +20,9 @@ func testServer(t *testing.T) (http.Handler, string) {
 		t.Fatal(err)
 	}
 	root = r
+	if thumbs, err = thumb.New(t.TempDir(), 1<<20); err != nil {
+		t.Fatal(err)
+	}
 	return newHandler("Strata", []string{"strata.example.com"}, nil), dir
 }
 
@@ -165,7 +169,7 @@ func TestInternalDirIsUnreachable(t *testing.T) {
 		"/api/raw?path=.strata/trash/secret.txt", "/api/download?path=/.strata/trash/secret.txt",
 		"/api/text?path=.strata/trash/secret.txt", "/api/sheet?path=.strata/x.xlsx",
 		"/api/search?path=.strata&q=secret", "/api/zip?path=.strata/trash/secret.txt",
-		"/api/versions?path=.strata/trash/secret.txt",
+		"/api/versions?path=.strata/trash/secret.txt", "/api/thumb?path=.strata/trash/x.png",
 	}
 	for _, p := range gets {
 		if got := do(h, "GET", p, "strata.example.com", "", nil).Code; got != http.StatusForbidden {
@@ -173,11 +177,13 @@ func TestInternalDirIsUnreachable(t *testing.T) {
 		}
 	}
 	posts := map[string]string{
-		"/api/mkdir":   `{"path":".strata/new"}`,
-		"/api/delete":  `{"path":".strata"}`,
-		"/api/move":    `{"from":".strata/trash/secret.txt","to":"stolen.txt"}`,
-		"/api/copy":    `{"from":"a","to":".strata/trash/planted"}`,
-		"/api/uploads": `{"dir":".strata/trash","name":"planted","size":1}`,
+		"/api/mkdir":    `{"path":".strata/new"}`,
+		"/api/delete":   `{"path":".strata"}`,
+		"/api/move":     `{"from":".strata/trash/secret.txt","to":"stolen.txt"}`,
+		"/api/copy":     `{"from":"a","to":".strata/trash/planted"}`,
+		"/api/uploads":  `{"dir":".strata/trash","name":"planted","size":1}`,
+		"/api/text":     `{"path":".strata/trash/planted","content":"x"}`,
+		"/api/favorite": `{"path":".strata/trash","on":true}`,
 	}
 	for p, body := range posts {
 		if got := do(h, "POST", p, "strata.example.com", body, post).Code; got != http.StatusForbidden {
