@@ -7,8 +7,11 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
+	"crypto/x509"
 	"embed"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,6 +24,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -30,6 +34,7 @@ import (
 	"strata/internal/fileops"
 	"strata/internal/safepath"
 	"strata/internal/sheet"
+	"strata/internal/tlsutil"
 	"strata/internal/userr"
 	"strata/internal/web"
 )
@@ -65,6 +70,11 @@ func main() {
 		// Proxies (IPs or CIDRs) whose X-Forwarded-* headers are believed.
 		proxies  = flag.String("trusted-proxies", envOr("STRATA_TRUSTED_PROXIES", ""), "comma-separated proxy IPs/CIDRs")
 		authMode = flag.String("auth", envOr("STRATA_AUTH", "passphrase"), `"passphrase" or "none"`)
+		// Persistent state: passphrase hash, TLS pair, app state.
+		cfgDir  = flag.String("config", envOr("STRATA_CONFIG", ""), "config directory (default /config if present)")
+		tlsMode = flag.String("tls", envOr("STRATA_TLS", "auto"), `"auto", "on" or "off"`)
+		tlsCert = flag.String("tls-cert", envOr("STRATA_TLS_CERT", ""), "TLS certificate (PEM)")
+		tlsKey  = flag.String("tls-key", envOr("STRATA_TLS_KEY", ""), "TLS private key (PEM)")
 	)
 	flag.Parse()
 
@@ -75,9 +85,26 @@ func main() {
 	root = r
 	log.Printf("serving %s on %s", root.Path(), *addr)
 
-	gate, err := loadGate(*authMode, *pwFile, strings.Split(*proxies, ","))
+	config, err := configDir(*cfgDir)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	gate, err := loadGate(*authMode, *pwFile, config, strings.Split(*proxies, ","))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Behind a TLS-terminating proxy, "auto" means plain HTTP on the
+	// internal network; anywhere else it means HTTPS.
+	mode := *tlsMode
+	if mode == "auto" && *proxies != "" && *tlsCert == "" {
+		mode = "off"
+		log.Printf("TLS off: behind trusted proxy %s (set STRATA_TLS=on to force HTTPS)", *proxies)
+	}
+	tlsCfg, fp, err := tlsutil.Config(mode, *tlsCert, *tlsKey, config, strings.Split(*hosts, ","))
+	if err != nil {
+		log.Fatalf("TLS: %v", err)
 	}
 
 	srv := &http.Server{
@@ -88,12 +115,38 @@ func main() {
 		MaxHeaderBytes:    64 << 10,
 		// No write timeout: large downloads and uploads legitimately run long.
 	}
-	log.Fatal(srv.ListenAndServe())
+	if tlsCfg == nil {
+		log.Fatal(srv.ListenAndServe())
+	}
+	srv.TLSConfig = tlsCfg
+	log.Printf("HTTPS on; certificate SHA-256 fingerprint %s", fp)
+	log.Fatal(srv.ListenAndServeTLS("", ""))
+}
+
+// configDir picks the directory for persistent state. An explicit setting
+// must be usable; the default /config is optional, since a plain compose
+// deployment may run without one.
+func configDir(explicit string) (string, error) {
+	dir := explicit
+	if dir == "" {
+		dir = "/config"
+		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+			log.Printf("no config volume at %s; first-run setup and saved state are off", dir)
+			return "", nil
+		}
+	}
+	probe, err := os.CreateTemp(dir, ".probe-*")
+	if err != nil {
+		return "", fmt.Errorf("config directory %s is not writable: %w", dir, err)
+	}
+	probe.Close()
+	os.Remove(probe.Name())
+	return dir, nil
 }
 
 // loadGate fails closed: without a usable passphrase hash Strata refuses to
 // start, unless auth was switched off explicitly.
-func loadGate(mode, pwFile string, proxies []string) (*auth.Gate, error) {
+func loadGate(mode, pwFile, config string, proxies []string) (*auth.Gate, error) {
 	switch mode {
 	case "none":
 		log.Printf("WARNING: STRATA_AUTH=none, anyone who can reach this port can read and delete every file")
@@ -102,9 +155,25 @@ func loadGate(mode, pwFile string, proxies []string) (*auth.Gate, error) {
 	default:
 		return nil, fmt.Errorf("STRATA_AUTH must be \"passphrase\" or \"none\", got %q", mode)
 	}
+	if pwFile == "" && config != "" {
+		pwFile = filepath.Join(config, "auth.hash")
+		if _, err := os.Stat(pwFile); errors.Is(err, os.ErrNotExist) {
+			g, code, err := auth.NewSetupGate(pwFile, proxies)
+			if err != nil {
+				return nil, err
+			}
+			log.Printf("================================================================")
+			log.Printf("  FIRST-RUN SETUP CODE: %s", code)
+			log.Printf("  Open Strata in a browser and enter this code to set a passphrase.")
+			log.Printf("  A new code is printed on every start until setup is done.")
+			log.Printf("================================================================")
+			return g, nil
+		}
+	}
 	if pwFile == "" {
-		return nil, errors.New("no passphrase configured: run `strata hash-password`, save the output to a file, " +
-			"and point STRATA_PASSWORD_FILE at it (or set STRATA_AUTH=none for a trusted network)")
+		return nil, errors.New("no passphrase configured: mount a config volume at /config for first-run setup, " +
+			"or run `strata hash-password` and point STRATA_PASSWORD_FILE at the result " +
+			"(or set STRATA_AUTH=none for a trusted network)")
 	}
 	info, err := os.Stat(pwFile)
 	if err != nil {
@@ -168,6 +237,7 @@ func newHandler(name string, hosts []string, gate *auth.Gate) http.Handler {
 
 	if gate != nil {
 		mux.HandleFunc("POST /api/login", gate.Login)
+		mux.HandleFunc("POST /api/setup", gate.Setup)
 		mux.HandleFunc("POST /api/logout", gate.Logout)
 		mux.HandleFunc("GET /api/session", gate.Session)
 	} else {
@@ -201,7 +271,8 @@ func newHandler(name string, hosts []string, gate *auth.Gate) http.Handler {
 }
 
 // healthcheck probes the local server for the container HEALTHCHECK, since
-// the distroless image has no wget or curl.
+// the distroless image has no wget or curl. Over HTTPS it trusts exactly
+// Strata's own certificate (pinned from disk) rather than skipping checks.
 func healthcheck(addr string) int {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -210,16 +281,72 @@ func healthcheck(addr string) int {
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
-	c := http.Client{Timeout: 3 * time.Second}
-	res, err := c.Get("http://" + net.JoinHostPort(host, port) + "/api/health")
+	target := net.JoinHostPort(host, port)
+
+	pool, name := pinnedCert()
+	if pool != nil {
+		c := http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: name, MinVersion: tls.VersionTLS12},
+		}}
+		if probe(c, "https://"+target) {
+			return 0
+		}
+	}
+	if probe(http.Client{Timeout: 3 * time.Second}, "http://"+target) {
+		return 0
+	}
+	return 1
+}
+
+func probe(c http.Client, base string) bool {
+	res, err := c.Get(base + "/api/health")
 	if err != nil {
-		return 1
+		return false
 	}
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return 1
+	return res.StatusCode == http.StatusOK
+}
+
+// pinnedCert loads the certificate the server is serving, from the same
+// settings the server reads, and picks a name it is valid for.
+func pinnedCert() (*x509.CertPool, string) {
+	files := []string{os.Getenv("STRATA_TLS_CERT")}
+	if files[0] == "" {
+		files = []string{
+			filepath.Join(envOr("STRATA_CONFIG", "/config"), "tls", "cert.pem"),
+			filepath.Join(tlsutil.ScratchDir(), "tls", "cert.pem"),
+		}
 	}
-	return 0
+	var raw []byte
+	for _, f := range files {
+		if b, err := os.ReadFile(f); err == nil {
+			raw = b
+			break
+		}
+	}
+	if raw == nil {
+		return nil, ""
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return nil, ""
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, ""
+	}
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(raw)
+	pool.AddCert(leaf)
+	switch {
+	case slices.Contains(leaf.DNSNames, "localhost"):
+		return pool, "localhost"
+	case len(leaf.DNSNames) > 0:
+		return pool, leaf.DNSNames[0]
+	case len(leaf.IPAddresses) > 0:
+		return pool, leaf.IPAddresses[0].String()
+	}
+	return nil, ""
 }
 
 func envOr(key, fallback string) string {
@@ -260,7 +387,12 @@ func handleRaw(w http.ResponseWriter, r *http.Request) {
 // serveFile streams a file, honouring Range requests so video scrubbing and
 // PDF page jumps work without downloading the whole file.
 func serveFile(w http.ResponseWriter, r *http.Request, rel string, attach bool) {
-	f, err := root.FS().Open(safepath.Clean(rel))
+	rel, err := safepath.User(rel)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	f, err := root.FS().Open(rel)
 	if err != nil {
 		fail(w, safepath.Err(err))
 		return
@@ -273,7 +405,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, rel string, attach bool) 
 		return
 	}
 
-	name := path.Base(safepath.Clean(rel))
+	name := path.Base(rel)
 	w.Header().Set("Content-Type", web.RawHeaders(w, filepath.Ext(name), mime.TypeByExtension(filepath.Ext(name))))
 	disp := "inline"
 	if attach {
@@ -290,7 +422,12 @@ func serveFile(w http.ResponseWriter, r *http.Request, rel string, attach bool) 
 func handleText(w http.ResponseWriter, r *http.Request) {
 	const limit = 2 << 20 // 2 MiB
 
-	f, err := root.FS().Open(safepath.Clean(r.URL.Query().Get("path")))
+	rel, err := safepath.User(r.URL.Query().Get("path"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	f, err := root.FS().Open(rel)
 	if err != nil {
 		fail(w, safepath.Err(err))
 		return

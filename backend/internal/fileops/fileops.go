@@ -40,7 +40,10 @@ type Listing struct {
 // List returns the contents of dir, directories first then files, each group
 // sorted case-insensitively by name.
 func List(root *safepath.Root, rel string) (*Listing, error) {
-	rel = safepath.Clean(rel)
+	rel, err := safepath.User(rel)
+	if err != nil {
+		return nil, err
+	}
 	d, err := root.FS().Open(rel)
 	if err != nil {
 		return nil, safepath.Err(err)
@@ -141,7 +144,10 @@ func classify(name string, isDir bool) string {
 
 // Mkdir creates a directory, including any missing parents.
 func Mkdir(root *safepath.Root, rel string) error {
-	rel = safepath.Clean(rel)
+	rel, err := safepath.User(rel)
+	if err != nil {
+		return err
+	}
 	if _, err := root.FS().Lstat(rel); err == nil {
 		return userr.Error("already exists")
 	}
@@ -151,7 +157,10 @@ func Mkdir(root *safepath.Root, rel string) error {
 // Move renames or relocates a path. Both ends are bounded by the root, so a
 // move cannot be used to write outside the share.
 func Move(root *safepath.Root, fromRel, toRel string) error {
-	from, to := safepath.Clean(fromRel), safepath.Clean(toRel)
+	from, to, err := userPair(fromRel, toRel)
+	if err != nil {
+		return err
+	}
 	if from == "." || to == "." {
 		return userr.Error("cannot move the share root")
 	}
@@ -161,7 +170,7 @@ func Move(root *safepath.Root, fromRel, toRel string) error {
 	if err := root.FS().MkdirAll(path.Dir(to), 0o755); err != nil {
 		return safepath.Err(err)
 	}
-	err := root.FS().Rename(from, to)
+	err = root.FS().Rename(from, to)
 	// Rename fails across filesystems, which happens when the user moves a
 	// file between nested datasets. Only then fall back to copy+remove.
 	if errors.Is(err, syscall.EXDEV) {
@@ -175,7 +184,10 @@ func Move(root *safepath.Root, fromRel, toRel string) error {
 
 // Copy duplicates a file or directory tree.
 func Copy(root *safepath.Root, fromRel, toRel string) error {
-	from, to := safepath.Clean(fromRel), safepath.Clean(toRel)
+	from, to, err := userPair(fromRel, toRel)
+	if err != nil {
+		return err
+	}
 	if to == "." {
 		return userr.Error("destination already exists")
 	}
@@ -193,6 +205,15 @@ func Copy(root *safepath.Root, fromRel, toRel string) error {
 		return safepath.Err(err)
 	}
 	return safepath.Err(copyTree(root, from, to))
+}
+
+func userPair(a, b string) (string, string, error) {
+	x, err := safepath.User(a)
+	if err != nil {
+		return "", "", err
+	}
+	y, err := safepath.User(b)
+	return x, y, err
 }
 
 // copyTree copies regular files and directories. Symlinks are skipped, never
@@ -250,7 +271,10 @@ func copyFile(root *safepath.Root, from, to string, mode os.FileMode) error {
 // Delete removes a file or directory tree. RemoveAll does not follow
 // symlinks, so deleting a link removes the link only.
 func Delete(root *safepath.Root, rel string) error {
-	rel = safepath.Clean(rel)
+	rel, err := safepath.User(rel)
+	if err != nil {
+		return err
+	}
 	if rel == "." {
 		return userr.Error("refusing to delete root")
 	}
@@ -261,6 +285,9 @@ func Delete(root *safepath.Root, rel string) error {
 // file is replaced atomically via a temp file in the same directory, so a
 // failed or interrupted write never truncates the original.
 func Save(root *safepath.Root, rel string, r io.Reader) error {
+	if _, err := safepath.User(rel); err != nil {
+		return err
+	}
 	return WriteAtomic(root, rel, func(w io.Writer) error {
 		_, err := io.Copy(w, r)
 		return err

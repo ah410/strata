@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,16 +20,21 @@ const CookieName = "__Host-strata"
 
 // Gate wires the passphrase check, sessions and throttling into HTTP.
 type Gate struct {
-	verifier *Verifier
+	// verifier is nil until a passphrase exists (first-run setup mode).
+	verifier atomic.Pointer[Verifier]
 	sessions *Sessions
 	limiter  *Limiter
 	trusted  []netip.Prefix
+	setup    *setup
 }
 
 // NewGate builds a Gate. trusted lists proxy addresses or CIDRs whose
 // X-Forwarded-For and X-Forwarded-Proto headers are believed.
 func NewGate(v *Verifier, trusted []string) (*Gate, error) {
-	g := &Gate{verifier: v, sessions: NewSessions(nil), limiter: NewLimiter(nil)}
+	g := &Gate{sessions: NewSessions(nil), limiter: NewLimiter(nil)}
+	if v != nil {
+		g.verifier.Store(v)
+	}
 	for _, t := range trusted {
 		if t = strings.TrimSpace(t); t == "" {
 			continue
@@ -51,15 +57,22 @@ var public = map[string]bool{
 	"/api/health":  true,
 	"/api/login":   true,
 	"/api/session": true,
+	"/api/setup":   true,
 }
 
 // Require rejects /api requests without a valid session. The UI shell and
 // its static assets stay public; they hold no data.
 func (g *Gate) Require(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") && !public[r.URL.Path] && !g.authed(r) {
-			http.Error(w, "sign in required", http.StatusUnauthorized)
-			return
+		if strings.HasPrefix(r.URL.Path, "/api/") && !public[r.URL.Path] {
+			if g.needsSetup() {
+				http.Error(w, "setup required", http.StatusPreconditionRequired)
+				return
+			}
+			if !g.authed(r) {
+				http.Error(w, "sign in required", http.StatusUnauthorized)
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -73,6 +86,10 @@ func (g *Gate) authed(r *http.Request) bool {
 // Session answers whether the caller is signed in, for the UI's first load.
 func (g *Gate) Session(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	if g.needsSetup() {
+		http.Error(w, "setup required", http.StatusPreconditionRequired)
+		return
+	}
 	if !g.authed(r) {
 		http.Error(w, "sign in required", http.StatusUnauthorized)
 		return
@@ -86,46 +103,70 @@ func (g *Gate) Login(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	client := g.ClientIP(r)
 
-	if !g.secure(r) {
-		http.Error(w, "sign-in needs HTTPS; open Strata through its https:// address", http.StatusForbidden)
+	if g.needsSetup() {
+		http.Error(w, "setup required", http.StatusPreconditionRequired)
 		return
 	}
-	if ok, wait := g.limiter.Allow(client); !ok {
-		log.Printf("login throttled for %s (%s left)", client, wait.Round(time.Second))
-		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(wait.Seconds()))))
-		http.Error(w, "too many attempts; try again later", http.StatusTooManyRequests)
-		return
-	}
-
-	if ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); ct != "application/json" {
-		http.Error(w, "expected application/json", http.StatusUnsupportedMediaType)
+	if !g.precheck(w, r, client) {
 		return
 	}
 	var body struct {
 		Passphrase string `json:"passphrase"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil {
-		http.Error(w, "bad request body", http.StatusBadRequest)
+	if !decodeSmall(w, r, &body) {
 		return
 	}
 
-	if body.Passphrase == "" || !g.verifier.Verify(body.Passphrase) {
+	if body.Passphrase == "" || !g.verifier.Load().Verify(body.Passphrase) {
 		g.limiter.Fail(client)
 		log.Printf("login failed from %s", client)
 		http.Error(w, "wrong passphrase", http.StatusUnauthorized)
 		return
 	}
 	g.limiter.Succeed(client)
+	if g.startSession(w, r) {
+		log.Printf("login ok from %s", client)
+	}
+}
 
-	// A fresh token on every sign-in; any cookie the client brought is
-	// replaced, so a planted session ID can't be carried over.
+// precheck applies the HTTPS requirement, throttling and content type shared
+// by sign-in and setup. It writes the error response itself.
+func (g *Gate) precheck(w http.ResponseWriter, r *http.Request, client string) bool {
+	if !g.secure(r) {
+		http.Error(w, "sign-in needs HTTPS; open Strata through its https:// address", http.StatusForbidden)
+		return false
+	}
+	if ok, wait := g.limiter.Allow(client); !ok {
+		log.Printf("sign-in throttled for %s (%s left)", client, wait.Round(time.Second))
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(wait.Seconds()))))
+		http.Error(w, "too many attempts; try again later", http.StatusTooManyRequests)
+		return false
+	}
+	if ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); ct != "application/json" {
+		http.Error(w, "expected application/json", http.StatusUnsupportedMediaType)
+		return false
+	}
+	return true
+}
+
+func decodeSmall(w http.ResponseWriter, r *http.Request, v any) bool {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(v); err != nil {
+		http.Error(w, "bad request body", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
+// startSession issues a fresh session cookie. Any cookie the client brought
+// is revoked first, so a planted session ID can't be carried over.
+func (g *Gate) startSession(w http.ResponseWriter, r *http.Request) bool {
 	if c, err := r.Cookie(CookieName); err == nil {
 		g.sessions.Revoke(c.Value)
 	}
 	token, err := g.sessions.Create()
 	if err != nil {
 		http.Error(w, "could not start session", http.StatusInternalServerError)
-		return
+		return false
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
@@ -136,9 +177,9 @@ func (g *Gate) Login(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
 	})
-	log.Printf("login ok from %s", client)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"ok":true}` + "\n"))
+	return true
 }
 
 // Logout ends the caller's session and clears the cookie.

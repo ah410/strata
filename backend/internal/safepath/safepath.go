@@ -12,6 +12,7 @@ package safepath
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -20,6 +21,13 @@ import (
 
 // ErrEscape is returned when a requested path resolves outside the root.
 var ErrEscape = errors.New("path escapes root")
+
+// Internal is the directory inside the share where Strata keeps its trash,
+// file versions and partial uploads. Requests may never name it directly.
+const Internal = ".strata"
+
+// ErrReserved is returned for request paths inside Internal.
+var ErrReserved = fmt.Errorf("%w: reserved for Strata", ErrEscape)
 
 // Root is the directory that bounds all access.
 type Root struct {
@@ -63,6 +71,20 @@ func Clean(rel string) string {
 		return "."
 	}
 	return c
+}
+
+// User cleans a path that came from a request and refuses Strata's internal
+// directory, so trash and version files are reachable only through their
+// own endpoints.
+func User(rel string) (string, error) {
+	c := Clean(rel)
+	// Any depth: a nested dataset keeps its own .strata for trash.
+	for _, part := range strings.Split(c, "/") {
+		if part == Internal {
+			return "", ErrReserved
+		}
+	}
+	return c, nil
 }
 
 // Err maps os.Root's escape refusal onto ErrEscape so callers can tell a

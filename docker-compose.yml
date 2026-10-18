@@ -16,7 +16,8 @@ services:
       STRATA_NAME: "Strata"
       # Timestamps render in this zone.
       TZ: "America/Phoenix"
-      # Sign-in passphrase hash (see README "Sign-in").
+      # Sign-in: either mount /config below and use the first-run setup
+      # code from the logs, or supply a hash file (see README "Sign-in").
       STRATA_PASSWORD_FILE: /run/secrets/strata_password
       # The hostname you open Strata by through your proxy.
       # STRATA_ALLOWED_HOSTS: "strata.example.com"
@@ -33,6 +34,8 @@ services:
       #
       # Read-write (needed for uploads and sheet editing):
       - /mnt/tank/documents:/data
+      # Passphrase hash, TLS certificate and saved state. Any small dataset.
+      # - /mnt/tank/apps/strata-config:/config
       #
       # If you would rather start read-only, append :ro —
       #   - /mnt/tank/documents:/data:ro
