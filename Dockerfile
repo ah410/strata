@@ -2,7 +2,9 @@
 # code. Bump tag and digest together, deliberately.
 
 # ─── stage 1: build the UI ───────────────────────────────────────────────────
-FROM node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS ui
+# The UI and the Go cross-compile run on the build machine's own platform;
+# only the final stage is per-architecture.
+FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS ui
 
 WORKDIR /ui
 # Copy manifests first so the dependency layer caches across source edits.
@@ -16,7 +18,7 @@ RUN mkdir -p /backend/dist && \
     npx --no-install vite build --outDir /backend/dist --emptyOutDir
 
 # ─── stage 2: build the server ───────────────────────────────────────────────
-FROM golang:1.27-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS server
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS server
 
 ENV GOTOOLCHAIN=local
 WORKDIR /src
@@ -27,9 +29,11 @@ COPY backend/ ./
 # The UI is embedded into the binary, so it must be in place before `go build`.
 COPY --from=ui /backend/dist ./dist
 
+ARG TARGETARCH
+ARG VERSION=dev
 # Static build: no libc dependency, so the runtime image can be distroless.
-RUN CGO_ENABLED=0 GOOS=linux go build \
-      -trimpath -buildvcs=false -ldflags="-s -w" \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build \
+      -trimpath -buildvcs=false -ldflags="-s -w -X main.version=$VERSION" \
       -o /strata .
 
 # ─── stage 3: runtime ────────────────────────────────────────────────────────
@@ -44,8 +48,7 @@ COPY --from=server /strata /usr/local/bin/strata
 VOLUME ["/data"]
 
 ENV STRATA_ROOT=/data \
-    STRATA_ADDR=:8080 \
-    TZ=America/Phoenix
+    STRATA_ADDR=:8080
 
 EXPOSE 8080
 
