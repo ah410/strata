@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -322,6 +323,10 @@ func WriteAtomic(root *safepath.Root, rel string, write func(io.Writer) error) e
 	}
 	if err := tmp.Close(); err != nil {
 		return err
+	}
+	// Keep what's being replaced. A failure here costs history, not the save.
+	if err := snapshot(root, rel); err != nil {
+		log.Printf("versions: could not keep previous %s: %v", rel, err)
 	}
 	return safepath.Err(root.FS().Rename(tmpName, rel))
 }

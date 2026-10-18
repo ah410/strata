@@ -3,6 +3,7 @@ import { api, ApiError, type Cell, type Entry, type Grid } from "../lib/api";
 import { colName } from "../lib/format";
 import { isDark, luminance, readableOn, setScopeTheme, themeVars, useScopeTheme } from "../lib/themes";
 import { ThemeSelect } from "./Appearance";
+import { History } from "./History";
 
 type SaveState = "idle" | "saving" | "saved" | "failed" | "conflict";
 
@@ -20,6 +21,8 @@ export function SheetEditor({ entry, onClose }: { entry: Entry; onClose: () => v
   const [sel, setSel] = useState<{ row: number; col: number }>({ row: 1, col: 1 });
   const [draft, setDraft] = useState<string | null>(null);
   const [save, setSave] = useState<SaveState>("idle");
+  const [showHistory, setShowHistory] = useState(false);
+  const closeHistory = useCallback(() => setShowHistory(false), []);
 
   const theme = useScopeTheme("sheet");
   const dark = isDark(theme);
@@ -153,7 +156,17 @@ export function SheetEditor({ entry, onClose }: { entry: Entry; onClose: () => v
   const heights = new Map(grid.rows.map((r) => [r.index, r.height]));
 
   return (
-    <Shell entry={entry} onClose={onClose}>
+    <Shell entry={entry} onClose={onClose} onHistory={() => setShowHistory(true)}>
+      {showHistory && (
+        <History
+          path={entry.path}
+          onClose={closeHistory}
+          onRestored={() => {
+            setSel({ row: 1, col: 1 });
+            load(grid.active);
+          }}
+        />
+      )}
       <div className="tabs" role="tablist">
         {grid.sheets.map((name) => (
           <button
@@ -314,10 +327,12 @@ export function SheetEditor({ entry, onClose }: { entry: Entry; onClose: () => v
 function Shell({
   entry,
   onClose,
+  onHistory,
   children,
 }: {
   entry: Entry;
   onClose: () => void;
+  onHistory?: () => void;
   children: React.ReactNode;
 }) {
   const theme = useScopeTheme("sheet");
@@ -338,6 +353,11 @@ function Shell({
         </div>
         <ThemeSelect compact label="Theme for spreadsheets" value={theme}
           onChange={(id) => setScopeTheme("sheet", id)} />
+        {onHistory && (
+          <button className="btn" onClick={onHistory}>
+            History
+          </button>
+        )}
         <a className="btn" href={api.downloadUrl(entry.path)} download>
           Download
         </a>

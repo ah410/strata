@@ -1,13 +1,17 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, type Entry } from "../lib/api";
 import { bytes } from "../lib/format";
 import { setScopeTheme, themeVars, useScopeTheme } from "../lib/themes";
 import { ThemeSelect } from "./Appearance";
+import { History } from "./History";
 
 /** Full-screen preview for the file kinds a browser can render natively. */
 export function Preview({ entry, onClose }: { entry: Entry; onClose: () => void }) {
   const [text, setText] = useState<{ content: string; truncated: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [rev, setRev] = useState(0); // bumps after a restore to reload
+  const closeHistory = useCallback(() => setShowHistory(false), []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -20,9 +24,9 @@ export function Preview({ entry, onClose }: { entry: Entry; onClose: () => void 
     setText(null);
     setError(null);
     api.text(entry.path).then(setText, (e: Error) => setError(e.message));
-  }, [entry.path, entry.kind]);
+  }, [entry.path, entry.kind, rev]);
 
-  const url = api.rawUrl(entry.path);
+  const url = api.rawUrl(entry.path) + (rev ? `&r=${rev}` : "");
   const scope = entry.kind === "text" || entry.kind === "csv" ? "text" : "media";
   const theme = useScopeTheme(scope);
 
@@ -44,11 +48,15 @@ export function Preview({ entry, onClose }: { entry: Entry; onClose: () => void 
         </div>
         <ThemeSelect compact label="Theme for this file type" value={theme}
           onChange={(id) => setScopeTheme(scope, id)} />
+        <button className="btn" onClick={() => setShowHistory(true)}>
+          History
+        </button>
         <a className="btn" href={api.downloadUrl(entry.path)} download>
           Download
         </a>
       </div>
 
+      {showHistory && <History path={entry.path} onClose={closeHistory} onRestored={() => setRev((r) => r + 1)} />}
       <div className={`overlay-body${isCentered(entry.kind) ? " center" : ""}`}>
         {error && (
           <div className="state error">

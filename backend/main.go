@@ -21,10 +21,12 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +77,8 @@ func main() {
 		tlsMode = flag.String("tls", envOr("STRATA_TLS", "auto"), `"auto", "on" or "off"`)
 		tlsCert = flag.String("tls-cert", envOr("STRATA_TLS_CERT", ""), "TLS certificate (PEM)")
 		tlsKey  = flag.String("tls-key", envOr("STRATA_TLS_KEY", ""), "TLS private key (PEM)")
+		// Days a deleted item stays restorable.
+		trashDays = flag.Int("trash-days", envInt("STRATA_TRASH_DAYS", 30), "days to keep deleted items")
 	)
 	flag.Parse()
 
@@ -106,6 +110,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("TLS: %v", err)
 	}
+
+	go sweep(max(*trashDays, 1))
 
 	srv := &http.Server{
 		Addr:              *addr,
@@ -261,6 +267,12 @@ func newHandler(name string, hosts []string, gate *auth.Gate) http.Handler {
 	mux.HandleFunc("POST /api/move", handleMove)
 	mux.HandleFunc("POST /api/copy", handleCopy)
 	mux.HandleFunc("POST /api/delete", handleDelete)
+	mux.HandleFunc("GET /api/trash", handleTrashList)
+	mux.HandleFunc("POST /api/trash/restore", handleTrashRestore)
+	mux.HandleFunc("POST /api/trash/purge", handleTrashPurge)
+	mux.HandleFunc("GET /api/versions", handleVersions)
+	mux.HandleFunc("GET /api/versions/download", handleVersionDownload)
+	mux.HandleFunc("POST /api/versions/restore", handleVersionRestore)
 	mux.HandleFunc("/", handleStatic)
 
 	var h http.Handler = mux
@@ -349,6 +361,13 @@ func pinnedCert() (*x509.CertPool, string) {
 	return nil, ""
 }
 
+func envInt(key string, fallback int) int {
+	if n, err := strconv.Atoi(os.Getenv(key)); err == nil {
+		return n
+	}
+	return fallback
+}
+
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -399,22 +418,35 @@ func serveFile(w http.ResponseWriter, r *http.Request, rel string, attach bool) 
 	}
 	defer f.Close()
 
+	serveOpen(w, r, f, path.Base(rel), attach)
+}
+
+// serveOpen streams an open file with the hardened raw-file headers.
+func serveOpen(w http.ResponseWriter, r *http.Request, f *os.File, name string, attach bool) {
 	info, err := f.Stat()
 	if err != nil || info.IsDir() {
 		http.Error(w, "not a file", http.StatusBadRequest)
 		return
 	}
-
-	name := path.Base(rel)
 	w.Header().Set("Content-Type", web.RawHeaders(w, filepath.Ext(name), mime.TypeByExtension(filepath.Ext(name))))
 	disp := "inline"
 	if attach {
 		disp = "attachment"
 	}
-	// Quote the filename so spaces and punctuation survive the header.
-	w.Header().Set("Content-Disposition", disp+`; filename="`+strings.ReplaceAll(name, `"`, "")+`"`)
-
+	w.Header().Set("Content-Disposition", contentDisposition(disp, name))
 	http.ServeContent(w, r, name, info.ModTime(), f)
+}
+
+// contentDisposition carries any filename: an ASCII fallback for old
+// clients plus the exact UTF-8 name per RFC 6266 / 5987.
+func contentDisposition(disp, name string) string {
+	ascii := strings.Map(func(r rune) rune {
+		if r < 0x20 || r > 0x7e || r == '"' || r == '\\' {
+			return '_'
+		}
+		return r
+	}, name)
+	return disp + `; filename="` + ascii + `"; filename*=UTF-8''` + url.PathEscape(name)
 }
 
 // handleText returns a text file's contents, capped so a stray 2 GB log does
@@ -569,18 +601,121 @@ func handleCopy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
+// handleDelete moves to the trash unless the caller asks for a permanent
+// delete (the UI only offers that when a location has no trash).
 func handleDelete(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Path string `json:"path"`
+		Path      string `json:"path"`
+		Permanent bool   `json:"permanent"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := fileops.Delete(root, req.Path); err != nil {
+	if req.Permanent {
+		if err := fileops.Delete(root, req.Path); err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+		return
+	}
+	id, err := fileops.Trash(root, req.Path)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "trashId": id})
+}
+
+func handleTrashList(w http.ResponseWriter, _ *http.Request) {
+	items, err := fileops.ListTrash(root)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"items": items})
+}
+
+func handleTrashRestore(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	p, err := fileops.Restore(root, req.ID)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"path": p})
+}
+
+func handleTrashPurge(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID  string `json:"id"`
+		All bool   `json:"all"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	var err error
+	if req.All {
+		err = fileops.EmptyTrash(root)
+	} else {
+		err = fileops.Purge(root, req.ID)
+	}
+	if err != nil {
 		fail(w, err)
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+func handleVersions(w http.ResponseWriter, r *http.Request) {
+	vs, err := fileops.ListVersions(root, r.URL.Query().Get("path"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"versions": vs})
+}
+
+func handleVersionDownload(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f, err := fileops.OpenVersion(root, q.Get("path"), q.Get("id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	defer f.Close()
+	serveOpen(w, r, f, path.Base(safepath.Clean(q.Get("path"))), true)
+}
+
+func handleVersionRestore(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+		ID   string `json:"id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := fileops.RestoreVersion(root, req.Path, req.ID); err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// sweep enforces trash and version retention now and once a day.
+func sweep(trashDays int) {
+	for {
+		if n, _ := fileops.SweepTrash(root, time.Duration(trashDays)*24*time.Hour); n > 0 {
+			log.Printf("trash: purged %d item(s) older than %d days", n, trashDays)
+		}
+		fileops.SweepVersions(root)
+		time.Sleep(24 * time.Hour)
+	}
 }
 
 // handleStatic serves the embedded SPA, falling back to index.html so client
@@ -659,6 +794,8 @@ func fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, os.ErrPermission):
 		log.Printf("error: %v", err)
 		http.Error(w, "permission denied", http.StatusForbidden)
+	case errors.Is(err, fileops.ErrNoTrash):
+		http.Error(w, err.Error(), http.StatusConflict)
 	case errors.Is(err, sheet.ErrConflict):
 		http.Error(w, err.Error(), http.StatusConflict)
 	case errors.As(err, new(*http.MaxBytesError)):

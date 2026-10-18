@@ -16,6 +16,20 @@ export interface Listing {
   entries: Entry[];
 }
 
+export interface TrashItem {
+  id: string;
+  path: string;
+  deleted: string;
+  size: number;
+  isDir: boolean;
+}
+
+export interface Version {
+  id: string;
+  time: string;
+  size: number;
+}
+
 export interface Usage {
   total: number;
   free: number;
@@ -147,12 +161,40 @@ export const api = {
       body: JSON.stringify({ from, to }),
     }),
 
-  remove: (path: string) =>
-    req<{ ok: true }>("/api/delete", {
+  /** Moves to the trash; `permanent` only when a location has no trash. */
+  remove: (path: string, permanent = false) =>
+    req<{ ok: true; trashId?: string }>("/api/delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path }),
+      body: JSON.stringify({ path, permanent }),
     }),
+
+  trash: () => req<{ items: TrashItem[] }>("/api/trash").then((r) => r.items),
+
+  restore: (id: string) =>
+    req<{ path: string }>("/api/trash/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    }),
+
+  purge: (id: string | "all") =>
+    req<{ ok: true }>("/api/trash/purge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(id === "all" ? { all: true } : { id }),
+    }),
+
+  versions: (path: string) => req<{ versions: Version[] }>(`/api/versions?path=${q(path)}`).then((r) => r.versions),
+
+  restoreVersion: (path: string, id: string) =>
+    req<{ ok: true }>("/api/versions/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, id }),
+    }),
+
+  versionUrl: (path: string, id: string) => `/api/versions/download?path=${q(path)}&id=${q(id)}`,
 
   upload: (dir: string, files: FileList | File[], onProgress?: (pct: number) => void) =>
     new Promise<void>((resolve, reject) => {
