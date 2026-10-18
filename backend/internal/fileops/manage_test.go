@@ -227,3 +227,47 @@ func TestNoMoveOrCopyIntoItself(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestTextSaveDetectsConflicts(t *testing.T) {
+	root, dir := share(t)
+	write(t, dir, "notes.md", "# v1")
+	v1, err := ReadText(root, "notes.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2, err := WriteText(root, "notes.md", v1.Version, "# v2")
+	if err != nil || read(t, dir, "notes.md") != "# v2" {
+		t.Fatalf("save: %v", err)
+	}
+	// Someone else saved meanwhile (another tab, an SMB client).
+	write(t, dir, "notes.md", "# theirs")
+	if _, err := WriteText(root, "notes.md", v2, "# mine"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale save: %v", err)
+	}
+	if read(t, dir, "notes.md") != "# theirs" {
+		t.Fatal("stale save overwrote")
+	}
+	if vs, _ := ListVersions(root, "notes.md"); len(vs) != 1 {
+		t.Errorf("save not versioned: %v", vs)
+	}
+	// Empty version creates, and never replaces.
+	if _, err := WriteText(root, "new.txt", "", "hi"); err != nil || read(t, dir, "new.txt") != "hi" {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := WriteText(root, "new.txt", "", "clobber"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("create over existing: %v", err)
+	}
+	write(t, dir, "big.log", strings.Repeat("x", TextMax+10))
+	big, _ := ReadText(root, "big.log")
+	if !big.Truncated || big.Version != "" {
+		t.Fatal("truncated file is editable")
+	}
+	if _, err := WriteText(root, "big.log", "", "x"); err == nil {
+		t.Fatal("truncated file overwritten")
+	}
+	for _, bad := range []string{".strata/x.txt", "a/.strata-temp", "."} {
+		if _, err := WriteText(root, bad, "", "x"); err == nil {
+			t.Errorf("WriteText(%q) accepted", bad)
+		}
+	}
+}

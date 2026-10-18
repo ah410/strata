@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, type Entry, type Listing, type SearchResult } from "./lib/api";
+import { api, ApiError, type AppState, type Entry, type Listing, type SearchResult } from "./lib/api";
 import { fromDrop, fromInput, uploadAll, type UploadItem } from "./lib/upload";
 import { bytes, joinPath, parentOf, when } from "./lib/format";
 import { Capacity } from "./components/Capacity";
@@ -10,16 +10,26 @@ import { AppearanceDialog } from "./components/Appearance";
 import { History } from "./components/History";
 import { TrashView } from "./components/TrashView";
 import { FolderPicker } from "./components/FolderPicker";
+import { FileGrid } from "./components/FileGrid";
+import { TextEditor } from "./components/TextEditor";
 
 // Rows dragged inside Strata carry their paths under this type.
 const DRAG_TYPE = "application/x-strata-paths";
 
 type SortKey = "name" | "size" | "modified" | "kind";
+type Layout = "list" | "grid";
+
+const LAYOUT_KEY = "strata:layout";
+const savedLayout = (): Layout => {
+  try { return localStorage.getItem(LAYOUT_KEY) === "grid" ? "grid" : "list"; } catch { return "list"; }
+};
 type Note = { text: string; error?: boolean; action?: { label: string; run: () => void } } | null;
 
 export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [path, setPath] = useState(() => decodeURIComponent(location.hash.slice(1)));
-  const [view, setView] = useState<"files" | "trash">("files");
+  const [view, setView] = useState<"files" | "trash" | "recent">("files");
+  const [layout, setLayoutState] = useState<Layout>(savedLayout);
+  const [saved, setSaved] = useState<AppState | null>(null);
   const [listing, setListing] = useState<Listing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -40,6 +50,15 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [searching, setSearching] = useState(false);
   const [picker, setPicker] = useState<null | "move" | "copy">(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
+
+  const loadSaved = useCallback(() => { api.state().then(setSaved, () => undefined); }, []);
+  useEffect(loadSaved, [loadSaved]);
+  const favorites = useMemo(() => new Set(saved?.favorites.map((e) => e.path)), [saved]);
+
+  const setLayout = (l: Layout) => {
+    setLayoutState(l);
+    try { localStorage.setItem(LAYOUT_KEY, l); } catch { /* per-device nicety only */ }
+  };
 
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
@@ -120,10 +139,48 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
 
   const activate = (e: Entry) => {
     if (e.isDir) return navigate(e.path);
-    if (e.kind === "sheet") return setOpen(e);
-    if (canPreview(e.kind)) return setOpen(e);
+    api.opened(e.path).then(loadSaved);
+    if (e.kind === "sheet" || canPreview(e.kind)) return setOpen(e);
     window.location.href = api.downloadUrl(e.path);
   };
+
+  const togglePick = (p: string, on: boolean) =>
+    setPicked((s) => {
+      const next = new Set(s);
+      on ? next.add(p) : next.delete(p);
+      return next;
+    });
+
+  const starPicked = async () => {
+    const targets = [...picked];
+    const on = !targets.every((p) => favorites.has(p));
+    try {
+      for (const p of targets) await api.favorite(p, on);
+      toast(on ? "Added to favorites" : "Removed from favorites");
+    } catch (e) {
+      toast((e as Error).message, true);
+    }
+    loadSaved();
+  };
+
+  const newTextFile = () =>
+    setPrompt({
+      title: "New text file",
+      label: "File name",
+      value: "Untitled.md",
+      onOk: async (v) => {
+        const name = v.trim();
+        if (!name) return;
+        const p = joinPath(path, name);
+        try {
+          await api.saveText(p, "", "");
+          refresh();
+          activate({ name, path: p, isDir: false, size: 0, modified: new Date().toISOString(), kind: "text" });
+        } catch (e) {
+          toast((e as Error).message, true);
+        }
+      },
+    });
 
   const searchMode = found !== null;
   const shown = searchMode ? found.entries : listing?.entries ?? [];
@@ -227,6 +284,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     }
     if (ok) toast(`${copy ? "Copied" : "Moved"} ${plural(ok, "item")} to /${dest}`);
     refresh();
+    if (!copy) loadSaved();
   };
 
   const downloadPicked = () => {
@@ -236,6 +294,17 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   };
 
   const dragPaths = (e: Entry) => (picked.has(e.path) ? [...picked] : [e.path]);
+  // Drag source on every item, drop target on folders; shared by both layouts.
+  const rowProps = (e: Entry) => ({
+    draggable: true,
+    className: dropTarget === e.path ? " drop-on" : "",
+    onDragStart: (ev: React.DragEvent) => {
+      ev.dataTransfer.setData(DRAG_TYPE, JSON.stringify(dragPaths(e)));
+      ev.dataTransfer.effectAllowed = "copyMove";
+    },
+    onDragEnd: () => setDropTarget(null),
+    ...(e.isDir ? dropProps(e.path) : {}),
+  });
   const dropProps = (dest: string) => ({
     onDragOver: (ev: React.DragEvent) => {
       if (!ev.dataTransfer.types.includes(DRAG_TYPE)) return;
@@ -323,11 +392,29 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
               <span className="dot" style={{ background: "var(--k-folder)" }} />
               All files
             </button>
+            {saved?.enabled && (
+              <button className="rail-item" aria-current={view === "recent"} onClick={() => { setView("recent"); setRailOpen(false); }}>
+                <span className="dot" style={{ background: "var(--k-text)" }} />
+                Recent
+              </button>
+            )}
             <button className="rail-item" aria-current={view === "trash"} onClick={() => { setView("trash"); setRailOpen(false); }}>
               <span className="dot" style={{ background: "var(--k-file)" }} />
               Trash
             </button>
           </div>
+
+          {saved && saved.favorites.length > 0 && (
+            <div className="rail-group">
+              <div className="rail-label">Favorites</div>
+              {saved.favorites.map((e) => (
+                <button key={e.path} className="rail-item" title={e.path} onClick={() => { setRailOpen(false); activate(e); }}>
+                  <span className="star" style={{ margin: 0 }}>★</span>
+                  {e.name}
+                </button>
+              ))}
+            </div>
+          )}
 
           {listing && listing.entries.some((e) => e.isDir) && (
             <div className="rail-group">
@@ -351,6 +438,8 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       <main className="main">
         {view === "trash" ? (
           <TrashView toast={toast} />
+        ) : view === "recent" ? (
+          <RecentView recent={saved?.recent ?? []} activate={activate} navigate={navigate} />
         ) : (
         <>
         <div className="topbar">
@@ -404,6 +493,11 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
             )}
             {picked.size > 0 && (
               <>
+                {saved?.enabled && (
+                  <button className="btn" onClick={starPicked}>
+                    {[...picked].every((p) => favorites.has(p)) ? "Unstar" : "Star"}
+                  </button>
+                )}
                 <button className="btn" onClick={() => setPicker("move")}>Move</button>
                 <button className="btn" onClick={() => setPicker("copy")}>Copy</button>
                 <button className="btn" onClick={downloadPicked}>Download</button>
@@ -412,7 +506,16 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
             )}
             {picked.size === 0 && (
               <>
+                <button
+                  className="btn btn-icon"
+                  onClick={() => setLayout(layout === "list" ? "grid" : "list")}
+                  aria-label={layout === "list" ? "Show as grid" : "Show as list"}
+                  title={layout === "list" ? "Show as grid" : "Show as list"}
+                >
+                  {layout === "list" ? "▦" : "☰"}
+                </button>
                 <button className="btn" onClick={newFolder}>New folder</button>
+                <button className="btn" onClick={newTextFile}>New file</button>
                 <button className="btn" onClick={() => folderInput.current?.click()}>Upload folder</button>
                 <button className="btn primary" onClick={() => fileInput.current?.click()}>Upload</button>
               </>
@@ -467,7 +570,11 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
             </div>
           )}
 
-          {!error && rows.length > 0 && (
+          {!error && rows.length > 0 && layout === "grid" && (
+            <FileGrid rows={rows} picked={picked} togglePick={togglePick} activate={activate} favorites={favorites} rowProps={rowProps} />
+          )}
+
+          {!error && rows.length > 0 && layout === "list" && (
             <table className="table">
               <thead>
                 <tr>
@@ -488,30 +595,14 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
               </thead>
               <tbody>
                 {rows.map((e) => (
-                  <tr
-                    key={e.path}
-                    className={`row${picked.has(e.path) ? " selected" : ""}${dropTarget === e.path ? " drop-on" : ""}`}
-                    draggable
-                    onDragStart={(ev) => {
-                      ev.dataTransfer.setData(DRAG_TYPE, JSON.stringify(dragPaths(e)));
-                      ev.dataTransfer.effectAllowed = "copyMove";
-                    }}
-                    onDragEnd={() => setDropTarget(null)}
-                    {...(e.isDir ? dropProps(e.path) : {})}
-                  >
+                  <tr key={e.path} {...rowProps(e)} className={`row${picked.has(e.path) ? " selected" : ""}${rowProps(e).className}`}>
                     <td className="col-pick">
                       <input
                         type="checkbox"
                         className="pick"
                         checked={picked.has(e.path)}
                         aria-label={`Select ${e.name}`}
-                        onChange={(ev) =>
-                          setPicked((s) => {
-                            const next = new Set(s);
-                            ev.target.checked ? next.add(e.path) : next.delete(e.path);
-                            return next;
-                          })
-                        }
+                        onChange={(ev) => togglePick(e.path, ev.target.checked)}
                       />
                     </td>
                     <td>
@@ -520,6 +611,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
                           <Glyph kind={e.kind} />
                         </span>
                         <button onClick={() => activate(e)}>{e.name}</button>
+                        {favorites.has(e.path) && <span className="star" aria-label="favorite">★</span>}
                       </div>
                     </td>
                     <td className="col-size">{e.isDir ? "—" : bytes(e.size)}</td>
@@ -577,7 +669,12 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       {open && open.kind === "sheet" && (
         <SheetEditor entry={open} onClose={() => { setOpen(null); refresh(); }} />
       )}
-      {open && open.kind !== "sheet" && <Preview entry={open} onClose={() => setOpen(null)} />}
+      {open && (open.kind === "text" || open.kind === "csv") && (
+        <TextEditor entry={open} onClose={() => { setOpen(null); refresh(); }} />
+      )}
+      {open && open.kind !== "sheet" && open.kind !== "text" && open.kind !== "csv" && (
+        <Preview entry={open} onClose={() => setOpen(null)} />
+      )}
 
       {appearanceOpen && <AppearanceDialog onClose={() => setAppearanceOpen(false)} />}
       {historyPath && <History path={historyPath} onClose={closeHistory} onRestored={() => { toast("Version restored"); refresh(); }} />}
@@ -609,6 +706,52 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
         </div>
       )}
     </div>
+  );
+}
+
+function RecentView({
+  recent, activate, navigate,
+}: {
+  recent: AppState["recent"];
+  activate: (e: Entry) => void;
+  navigate: (p: string) => void;
+}) {
+  return (
+    <>
+      <div className="topbar">
+        <div className="crumbs"><span className="crumb">Recent files</span></div>
+      </div>
+      <div className="listing">
+        {recent.length === 0 ? (
+          <div className="state">
+            <h2>Nothing opened yet</h2>
+            <p>Files you open or edit in Strata show up here.</p>
+          </div>
+        ) : (
+          <table className="table">
+            <thead>
+              <tr><th>Name</th><th className="col-where">Folder</th><th className="col-when">Opened</th></tr>
+            </thead>
+            <tbody>
+              {recent.map((e) => (
+                <tr key={e.path} className="row">
+                  <td>
+                    <div className="name">
+                      <span className="glyph"><Glyph kind={e.kind} /></span>
+                      <button onClick={() => activate(e)}>{e.name}</button>
+                    </div>
+                  </td>
+                  <td className="col-where">
+                    <button className="link" onClick={() => navigate(parentOf(e.path))}>/{parentOf(e.path)}</button>
+                  </td>
+                  <td className="col-when">{when(e.opened)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
   );
 }
 

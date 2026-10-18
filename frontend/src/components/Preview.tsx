@@ -5,10 +5,8 @@ import { setScopeTheme, themeVars, useScopeTheme } from "../lib/themes";
 import { ThemeSelect } from "./Appearance";
 import { History } from "./History";
 
-/** Full-screen preview for the file kinds a browser can render natively. */
+/** Full-screen preview for media a browser renders natively (text opens in TextEditor). */
 export function Preview({ entry, onClose }: { entry: Entry; onClose: () => void }) {
-  const [text, setText] = useState<{ content: string; truncated: boolean } | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [rev, setRev] = useState(0); // bumps after a restore to reload
   const closeHistory = useCallback(() => setShowHistory(false), []);
@@ -19,15 +17,8 @@ export function Preview({ entry, onClose }: { entry: Entry; onClose: () => void 
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  useEffect(() => {
-    if (entry.kind !== "text" && entry.kind !== "csv") return;
-    setText(null);
-    setError(null);
-    api.text(entry.path).then(setText, (e: Error) => setError(e.message));
-  }, [entry.path, entry.kind, rev]);
-
   const url = api.rawUrl(entry.path) + (rev ? `&r=${rev}` : "");
-  const scope = entry.kind === "text" || entry.kind === "csv" ? "text" : "media";
+  const scope = "media";
   const theme = useScopeTheme(scope);
 
   return (
@@ -58,26 +49,12 @@ export function Preview({ entry, onClose }: { entry: Entry; onClose: () => void 
 
       {showHistory && <History path={entry.path} onClose={closeHistory} onRestored={() => setRev((r) => r + 1)} />}
       <div className={`overlay-body${isCentered(entry.kind) ? " center" : ""}`}>
-        {error && (
-          <div className="state error">
-            <h2>Preview unavailable</h2>
-            <p>{error}</p>
-          </div>
-        )}
+        {entry.kind === "image" && <img src={url} alt={entry.name} />}
+        {entry.kind === "pdf" && <iframe src={url} title={entry.name} />}
+        {entry.kind === "video" && <video src={url} controls autoPlay />}
+        {entry.kind === "audio" && <audio src={url} controls autoPlay />}
 
-        {!error && entry.kind === "image" && <img src={url} alt={entry.name} />}
-        {!error && entry.kind === "pdf" && <iframe src={url} title={entry.name} />}
-        {!error && entry.kind === "video" && <video src={url} controls autoPlay />}
-        {!error && entry.kind === "audio" && <audio src={url} controls autoPlay />}
-
-        {!error && (entry.kind === "text" || entry.kind === "csv") && (
-          <pre className="code">
-            {text ? text.content : "Loading…"}
-            {text?.truncated && "\n\n— truncated at 2 MB —"}
-          </pre>
-        )}
-
-        {!error && !PREVIEWABLE.has(entry.kind) && (
+        {!PREVIEWABLE.has(entry.kind) && (
           <div className="state">
             <h2>No preview for this file type</h2>
             <p>Download it to open in an app that understands {entry.name.split(".").pop()}.</p>
@@ -95,5 +72,5 @@ export function canPreview(kind: string): boolean {
 }
 
 function isCentered(kind: string): boolean {
-  return kind !== "text" && kind !== "csv" && kind !== "pdf";
+  return kind !== "pdf";
 }

@@ -30,6 +30,19 @@ export interface Version {
   size: number;
 }
 
+export interface TextFile {
+  content: string;
+  truncated: boolean;
+  version: string;
+}
+
+export interface AppState {
+  /** False without a config volume: nothing is remembered. */
+  enabled: boolean;
+  favorites: Entry[];
+  recent: (Entry & { opened: string })[];
+}
+
 export interface SearchResult {
   entries: Entry[];
   truncated: boolean;
@@ -133,7 +146,35 @@ export const api = {
 
   list: (path: string) => req<Listing>(`/api/list?path=${q(path)}`),
   usage: () => req<Usage>("/api/usage"),
-  text: (path: string) => req<{ content: string; truncated: boolean }>(`/api/text?path=${q(path)}`),
+  text: (path: string) => req<TextFile>(`/api/text?path=${q(path)}`),
+
+  /** Saves text; an empty version creates a new file. Resolves to the new version. */
+  saveText: (path: string, version: string, content: string) =>
+    req<{ version: string }>("/api/text", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, version, content }),
+    }).then((r) => r.version),
+
+  /** The mtime in the URL means a changed image gets a fresh thumbnail. */
+  thumbUrl: (e: Entry) => `/api/thumb?path=${q(e.path)}&m=${q(e.modified)}`,
+
+  state: () => req<AppState>("/api/state"),
+
+  favorite: (path: string, on: boolean) =>
+    req<{ ok: true }>("/api/favorite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, on }),
+    }),
+
+  /** Records an opened file; failures don't matter to the user. */
+  opened: (path: string) =>
+    req<{ ok: true }>("/api/recent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }).catch(() => undefined),
 
   sheet: (path: string, sheet?: string) =>
     req<Grid>(`/api/sheet?path=${q(path)}${sheet ? `&sheet=${q(sheet)}` : ""}`),
