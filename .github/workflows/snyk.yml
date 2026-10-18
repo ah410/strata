@@ -14,12 +14,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      # The Snyk Go container's toolchain is older than go.mod asks for, so run
+      # the CLI here. The embed needs a dist folder to type-check.
+      - run: mkdir -p backend/dist && touch backend/dist/.placeholder
+      - uses: snyk/actions/setup@11b673cfb4b0dc0d860a1323caa199d54950dcce # master
       - name: Snyk Open Source (backend)
-        uses: snyk/actions/golang@11b673cfb4b0dc0d860a1323caa199d54950dcce # master
+        working-directory: backend
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          args: --file=backend/go.mod --severity-threshold=high
+        run: snyk test --file=go.mod --severity-threshold=high
 
   node:
     runs-on: ubuntu-latest
@@ -32,4 +39,5 @@ jobs:
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
-          args: --file=frontend/package.json --severity-threshold=high
+          # The lockfile pins the tree, so no npm install is needed.
+          args: --file=frontend/package-lock.json --severity-threshold=high
