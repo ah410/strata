@@ -165,6 +165,9 @@ func Move(root *safepath.Root, fromRel, toRel string) error {
 	if from == "." || to == "." {
 		return userr.Error("cannot move the share root")
 	}
+	if within(to, from) {
+		return userr.Error("can't move a folder into itself")
+	}
 	if _, err := root.FS().Lstat(to); err == nil {
 		return userr.Error("destination already exists")
 	}
@@ -192,6 +195,10 @@ func Copy(root *safepath.Root, fromRel, toRel string) error {
 	if to == "." {
 		return userr.Error("destination already exists")
 	}
+	// Copying a tree into itself would never finish.
+	if within(to, from) {
+		return userr.Error("can't copy a folder into itself")
+	}
 	info, err := root.FS().Lstat(from)
 	if err != nil {
 		return safepath.Err(err)
@@ -206,6 +213,11 @@ func Copy(root *safepath.Root, fromRel, toRel string) error {
 		return safepath.Err(err)
 	}
 	return safepath.Err(copyTree(root, from, to))
+}
+
+// within reports whether p is dir or somewhere below it.
+func within(p, dir string) bool {
+	return dir == "." || p == dir || strings.HasPrefix(p, dir+"/")
 }
 
 func userPair(a, b string) (string, string, error) {
@@ -324,11 +336,16 @@ func WriteAtomic(root *safepath.Root, rel string, write func(io.Writer) error) e
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	// Keep what's being replaced. A failure here costs history, not the save.
+	return safepath.Err(replace(root, tmpName, rel))
+}
+
+// replace renames a finished temp file over rel, keeping the old content.
+func replace(root *safepath.Root, tmpName, rel string) error {
+	// A failure here costs history, not the save.
 	if err := snapshot(root, rel); err != nil {
 		log.Printf("versions: could not keep previous %s: %v", rel, err)
 	}
-	return safepath.Err(root.FS().Rename(tmpName, rel))
+	return root.FS().Rename(tmpName, rel)
 }
 
 // createTemp opens a new hidden temp file in dir with its final mode, so no

@@ -1,12 +1,9 @@
-// Strata — a small, self-hosted file manager for a TrueNAS share.
-//
-// Access control is deliberately absent: this is designed to be published
-// only on a Tailscale tailnet, where the network itself is the boundary.
-// Do not expose it to the public internet.
+// Strata is a small, self-hosted file manager for a TrueNAS share.
 package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"embed"
@@ -263,6 +260,13 @@ func newHandler(name string, hosts []string, gate *auth.Gate) http.Handler {
 	mux.HandleFunc("GET /api/sheet", handleSheetRead)
 	mux.HandleFunc("POST /api/sheet", handleSheetWrite)
 	mux.HandleFunc("POST /api/upload", handleUpload)
+	mux.HandleFunc("POST /api/uploads", handleUploadStart)
+	mux.HandleFunc("HEAD /api/uploads/{id}", handleUploadOffset)
+	mux.HandleFunc("PUT /api/uploads/{id}", handleUploadChunk)
+	mux.HandleFunc("POST /api/uploads/{id}/finish", handleUploadFinish)
+	mux.HandleFunc("DELETE /api/uploads/{id}", handleUploadAbort)
+	mux.HandleFunc("GET /api/search", handleSearch)
+	mux.HandleFunc("GET /api/zip", handleZip)
 	mux.HandleFunc("POST /api/mkdir", handleMkdir)
 	mux.HandleFunc("POST /api/move", handleMove)
 	mux.HandleFunc("POST /api/copy", handleCopy)
@@ -521,6 +525,7 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	saved := []string{}
+	relPath := "" // from a "relpath" field sent just before its file
 	for {
 		part, err := reader.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -530,20 +535,29 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 			fail(w, err)
 			return
 		}
+		if part.FormName() == "relpath" {
+			b, _ := io.ReadAll(io.LimitReader(part, 4<<10))
+			part.Close()
+			relPath = string(b)
+			continue
+		}
 		if part.FormName() != "file" || part.FileName() == "" {
 			part.Close()
 			continue
 		}
 
-		// Trust only the base name; browsers may send a full path for
-		// directory uploads and we do not want to honour it blindly.
-		name := filepath.Base(strings.ReplaceAll(part.FileName(), "\\", "/"))
-		if name == "." || name == ".." || name == "/" {
+		name := relPath
+		relPath = ""
+		if name == "" {
+			name = part.FileName() // already reduced to a base name
+		}
+		rel, err := uploadName(name)
+		if err != nil {
 			part.Close()
-			fail(w, userr.Error("invalid file name"))
+			fail(w, err)
 			return
 		}
-		dest := path.Join(dir, name)
+		dest := path.Join(dir, rel)
 
 		err = fileops.Save(root, dest, part)
 		part.Close()
@@ -555,6 +569,129 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, map[string]any{"saved": saved})
+}
+
+// uploadName vets a client-supplied relative path for a folder upload:
+// every component must be a plain name, so nothing climbs out of the
+// target folder or lands in Strata's internal directory.
+func uploadName(name string) (string, error) {
+	name = strings.ReplaceAll(name, "\\", "/")
+	parts := strings.Split(strings.Trim(name, "/"), "/")
+	if len(parts) > 64 {
+		return "", userr.Error("folder nesting is too deep")
+	}
+	for _, p := range parts {
+		if p == "" || p == "." || p == ".." || p == safepath.Internal || strings.ContainsRune(p, 0) {
+			return "", userr.Error("invalid file name")
+		}
+	}
+	return strings.Join(parts, "/"), nil
+}
+
+func handleUploadStart(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Dir  string `json:"dir"`
+		Name string `json:"name"`
+		Size int64  `json:"size"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	rel, err := uploadName(req.Name)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	id, err := fileops.StartUpload(root, path.Join(safepath.Clean(req.Dir), rel), req.Size, maxUpload)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"id": id, "chunk": fileops.ChunkMax / 2})
+}
+
+func handleUploadOffset(w http.ResponseWriter, r *http.Request) {
+	off, size, err := fileops.UploadOffset(root, r.PathValue("id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	w.Header().Set("Upload-Offset", strconv.FormatInt(off, 10))
+	w.Header().Set("Upload-Length", strconv.FormatInt(size, 10))
+	w.Header().Set("Cache-Control", "no-store")
+}
+
+func handleUploadChunk(w http.ResponseWriter, r *http.Request) {
+	off, err := strconv.ParseInt(r.Header.Get("Upload-Offset"), 10, 64)
+	if err != nil || off < 0 {
+		http.Error(w, "missing Upload-Offset", http.StatusBadRequest)
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, fileops.ChunkMax)
+	next, err := fileops.WriteChunk(root, r.PathValue("id"), off, body)
+	w.Header().Set("Upload-Offset", strconv.FormatInt(next, 10))
+	var oe *fileops.OffsetError
+	if errors.As(err, &oe) {
+		http.Error(w, "offset mismatch", http.StatusConflict)
+		return
+	}
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func handleUploadFinish(w http.ResponseWriter, r *http.Request) {
+	p, err := fileops.FinishUpload(root, r.PathValue("id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"saved": []string{p}})
+}
+
+func handleUploadAbort(w http.ResponseWriter, r *http.Request) {
+	if err := fileops.AbortUpload(root, r.PathValue("id")); err != nil {
+		fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func handleSearch(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	res, err := fileops.Search(ctx, root, r.URL.Query().Get("path"), r.URL.Query().Get("q"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, res)
+}
+
+// handleZip streams a selection as one archive. It is a GET so the browser
+// downloads it natively; reading needs no CSRF token, only a session.
+func handleZip(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	paths, err := fileops.ZipCheck(root, q["path"])
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	name := "strata.zip"
+	if len(paths) == 1 && paths[0] != "." {
+		name = path.Base(paths[0]) + ".zip"
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", contentDisposition("attachment", name))
+	w.Header().Set("Cache-Control", "no-store")
+	if err := fileops.Zip(r.Context(), root, paths, w); err != nil {
+		// Headers are gone; abort the connection so the client sees a
+		// failed download instead of a truncated archive.
+		log.Printf("zip: %v", err)
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func handleMkdir(w http.ResponseWriter, r *http.Request) {
@@ -707,9 +844,10 @@ func handleVersionRestore(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
-// sweep enforces trash and version retention now and once a day.
+// sweep enforces trash, version and partial-upload retention.
 func sweep(trashDays int) {
 	for {
+		fileops.SweepUploads(root, fileops.UploadMaxAge)
 		if n, _ := fileops.SweepTrash(root, time.Duration(trashDays)*24*time.Hour); n > 0 {
 			log.Printf("trash: purged %d item(s) older than %d days", n, trashDays)
 		}
