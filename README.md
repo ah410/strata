@@ -12,6 +12,8 @@ favorites, a thumbnail cache) lives in one config directory.
 
 Created with Claude as a POC.
 
+![The grid view with image thumbnails](docs/screenshots/2-grid.png)
+
 ## Features
 
 - **Files:** browse, search names below any folder, upload files or whole
