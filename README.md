@@ -157,6 +157,29 @@ downstream of it — exactly as Excel would.
 
 ---
 
+## Trash and version history
+
+Deleting in Strata moves things to the **Trash** (in the sidebar) instead of
+removing them, and the toast offers **Undo**. Items stay restorable for 30 days
+(`STRATA_TRASH_DAYS`), then they're removed for good. Restoring never
+overwrites: if the old name is taken, the item comes back as
+`name (restored).ext`.
+
+Every time Strata replaces a file (saving a workbook, uploading over an
+existing file, restoring an old version), the previous copy is kept.
+**History** on a file, or in the editor and preview, lists the last 20 copies
+from up to 90 days back, with Download and Restore. Restoring is itself kept as a
+version, so it can be undone too.
+
+Both live in a `.strata` folder at the top of each dataset, so moving
+something into them is an instant rename rather than a copy. SMB users will
+see that folder; leave it alone, or delete it to discard all trash and
+history for that dataset. These complement ZFS snapshots rather than replace
+them: snapshots protect against anything, including changes made outside
+Strata.
+
+---
+
 ## Does editing here conflict with editing over SMB?
 
 Strata won't overwrite someone else's save. Each edit is checked against the
@@ -272,6 +295,6 @@ number you open the thing to check.
   displayed in the editor.
 - The formula engine covers common functions. An unsupported one keeps its
   formula on save but may show a blank value in the browser.
-- No search. If you want it, `fileops.List` is where it would go.
+- No search yet.
 - No thumbnails — a grid of image previews would need a cache, and this
   deliberately has no state.

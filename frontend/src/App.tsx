@@ -1,17 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type Entry, type Listing } from "./lib/api";
+import { api, ApiError, type Entry, type Listing } from "./lib/api";
 import { bytes, joinPath, parentOf, when } from "./lib/format";
 import { Capacity } from "./components/Capacity";
 import { Glyph } from "./components/Glyph";
 import { Preview, canPreview } from "./components/Preview";
 import { SheetEditor } from "./components/SheetEditor";
 import { AppearanceDialog } from "./components/Appearance";
+import { History } from "./components/History";
+import { TrashView } from "./components/TrashView";
 
 type SortKey = "name" | "size" | "modified" | "kind";
-type Note = { text: string; error?: boolean } | null;
+type Note = { text: string; error?: boolean; action?: { label: string; run: () => void } } | null;
 
 export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [path, setPath] = useState(() => decodeURIComponent(location.hash.slice(1)));
+  const [view, setView] = useState<"files" | "trash">("files");
   const [listing, setListing] = useState<Listing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -24,6 +27,9 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [dragging, setDragging] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [historyPath, setHistoryPath] = useState<string | null>(null);
+  const closeHistory = useCallback(() => setHistoryPath(null), []);
+  const noteTimer = useRef<number>();
 
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -41,10 +47,12 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     );
   }, [path]);
 
+  // Also on returning from the Trash view, which may have restored files.
   useEffect(() => {
+    if (view !== "files") return;
     refresh();
     history.replaceState(null, "", `#${encodeURIComponent(path)}`);
-  }, [refresh, path]);
+  }, [refresh, path, view]);
 
   // Browser back/forward should walk the directory history.
   useEffect(() => {
@@ -53,10 +61,12 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  const toast = (text: string, error = false) => {
-    setNote({ text, error });
-    setTimeout(() => setNote(null), error ? 5200 : 2600);
-  };
+  // Stable, so views can depend on it; each toast resets the dismiss timer.
+  const toast = useCallback((text: string, error = false, action?: { label: string; run: () => void }) => {
+    setNote({ text, error, action });
+    window.clearTimeout(noteTimer.current);
+    noteTimer.current = window.setTimeout(() => setNote(null), action ? 7000 : error ? 5200 : 2600);
+  }, []);
 
   const run = async (fn: () => Promise<unknown>, ok: string) => {
     try {
@@ -69,6 +79,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   };
 
   const navigate = (to: string) => {
+    setView("files");
     setPath(to);
     setRailOpen(false);
     history.pushState(null, "", `#${encodeURIComponent(to)}`);
@@ -118,18 +129,45 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     }
   };
 
-  const removePicked = () => {
+  // Deleting moves to the trash at once; the toast offers Undo. Only a
+  // location without a trash asks before deleting permanently.
+  const removePicked = async () => {
     const targets = [...picked];
     if (!targets.length) return;
-    setPrompt({
-      title: `Delete ${targets.length} item${targets.length === 1 ? "" : "s"}?`,
-      label: "",
-      value: "",
-      onOk: () =>
-        run(async () => {
-          for (const p of targets) await api.remove(p);
-        }, `Deleted ${targets.length} item${targets.length === 1 ? "" : "s"}`),
-    });
+    const ids: string[] = [];
+    const noTrash: string[] = [];
+    for (const p of targets) {
+      try {
+        const r = await api.remove(p);
+        if (r.trashId) ids.push(r.trashId);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 409) noTrash.push(p);
+        else toast((e as Error).message, true);
+      }
+    }
+    refresh();
+    if (ids.length) {
+      const n = ids.length;
+      toast(`Moved ${n} item${n === 1 ? "" : "s"} to trash`, false, {
+        label: "Undo",
+        run: async () => {
+          for (const id of ids) await api.restore(id).catch(() => undefined);
+          toast("Restored");
+          refresh();
+        },
+      });
+    }
+    if (noTrash.length) {
+      setPrompt({
+        title: `Delete ${noTrash.length} item${noTrash.length === 1 ? "" : "s"} permanently?`,
+        label: "",
+        value: "",
+        onOk: () =>
+          run(async () => {
+            for (const p of noTrash) await api.remove(p, true);
+          }, "Deleted permanently"),
+      });
+    }
   };
 
   const renamePicked = () => {
@@ -194,11 +232,15 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
             <div className="rail-label">Library</div>
             <button
               className="rail-item"
-              aria-current={path === ""}
+              aria-current={view === "files" && path === ""}
               onClick={() => navigate("")}
             >
               <span className="dot" style={{ background: "var(--k-folder)" }} />
               All files
+            </button>
+            <button className="rail-item" aria-current={view === "trash"} onClick={() => { setView("trash"); setRailOpen(false); }}>
+              <span className="dot" style={{ background: "var(--k-file)" }} />
+              Trash
             </button>
           </div>
 
@@ -222,6 +264,10 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       </aside>
 
       <main className="main">
+        {view === "trash" ? (
+          <TrashView toast={toast} />
+        ) : (
+        <>
         <div className="topbar">
           <button
             className="btn btn-icon rail-toggle"
@@ -249,6 +295,11 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
             {picked.size === 1 && (
               <button className="btn" onClick={renamePicked}>
                 Rename
+              </button>
+            )}
+            {picked.size === 1 && !listing?.entries.find((e) => e.path === [...picked][0])?.isDir && (
+              <button className="btn" onClick={() => setHistoryPath([...picked][0])}>
+                History
               </button>
             )}
             {picked.size > 0 && (
@@ -342,6 +393,8 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
             </table>
           )}
         </div>
+        </>
+        )}
       </main>
 
       <input
@@ -361,6 +414,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       {open && open.kind !== "sheet" && <Preview entry={open} onClose={() => setOpen(null)} />}
 
       {appearanceOpen && <AppearanceDialog onClose={() => setAppearanceOpen(false)} />}
+      {historyPath && <History path={historyPath} onClose={closeHistory} onRestored={() => { toast("Version restored"); refresh(); }} />}
 
       {prompt && (
         <Dialog
@@ -373,6 +427,19 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
         <div className={`toast${note.error ? " err" : ""}`} role="status">
           <span className="toast-dot" />
           {note.text}
+          {note.action && (
+            <button
+              className="btn"
+              style={{ height: 24, marginLeft: 6 }}
+              onClick={() => {
+                const a = note.action!;
+                setNote(null);
+                a.run();
+              }}
+            >
+              {note.action.label}
+            </button>
+          )}
         </div>
       )}
     </div>
