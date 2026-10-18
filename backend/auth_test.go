@@ -30,7 +30,7 @@ func authServer(t *testing.T, proxies ...string) http.Handler {
 	}
 	pw := filepath.Join(t.TempDir(), "pw")
 	os.WriteFile(pw, []byte(h+"\n"), 0o600)
-	gate, err := loadGate("passphrase", pw, proxies)
+	gate, err := loadGate("passphrase", pw, "", proxies)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,21 +174,21 @@ func TestBruteForceIsThrottled(t *testing.T) {
 }
 
 func TestFailClosedWithoutPassphrase(t *testing.T) {
-	if _, err := loadGate("passphrase", "", nil); err == nil {
+	if _, err := loadGate("passphrase", "", "", nil); err == nil {
 		t.Error("started with no passphrase configured")
 	}
-	if _, err := loadGate("passphrase", "/nonexistent", nil); err == nil {
+	if _, err := loadGate("passphrase", "/nonexistent", "", nil); err == nil {
 		t.Error("started with a missing password file")
 	}
 	bad := filepath.Join(t.TempDir(), "pw")
 	os.WriteFile(bad, []byte("hunter2"), 0o600)
-	if _, err := loadGate("passphrase", bad, nil); err == nil {
+	if _, err := loadGate("passphrase", bad, "", nil); err == nil {
 		t.Error("started with a plaintext password file")
 	}
-	if _, err := loadGate("off", "", nil); err == nil {
+	if _, err := loadGate("off", "", "", nil); err == nil {
 		t.Error("unknown auth mode accepted")
 	}
-	if g, err := loadGate("none", "", nil); err != nil || g != nil {
+	if g, err := loadGate("none", "", "", nil); err != nil || g != nil {
 		t.Error("explicit auth=none should disable the gate")
 	}
 }

@@ -77,7 +77,7 @@ const GUARD = { "X-Strata": "1" };
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...init, headers: { ...GUARD, ...init?.headers } });
-  if (res.status === 401 && !url.startsWith("/api/session") && !url.startsWith("/api/login")) {
+  if ((res.status === 401 || res.status === 428) && !url.startsWith("/api/session") && !url.startsWith("/api/login") && !url.startsWith("/api/setup")) {
     signedOut();
   }
   if (!res.ok) {
@@ -104,6 +104,13 @@ export const api = {
     }),
 
   logout: () => req<{ ok: true }>("/api/logout", { method: "POST" }),
+
+  setup: (code: string, passphrase: string) =>
+    req<{ ok: true }>("/api/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, passphrase }),
+    }),
 
   list: (path: string) => req<Listing>(`/api/list?path=${q(path)}`),
   usage: () => req<Usage>("/api/usage"),

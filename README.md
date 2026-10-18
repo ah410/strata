@@ -10,28 +10,49 @@ Created with Claude as a POC.
 
 ---
 
-## Sign-in
+## Sign-in and HTTPS
 
 Strata asks for a passphrase before showing anything. There are no user
 accounts: one passphrase, hashed with argon2id, unlocks it.
 
-1. Create the hash. It prompts twice without echoing:
+**First run.** Mount a config volume at `/config`. On first start Strata
+prints a one-time setup code in its logs:
 
-   ```bash
-   docker compose run --rm -it strata hash-password > strata_password
-   ```
+```
+FIRST-RUN SETUP CODE: 34EB-WUZC-7XXO-XQJV-BLKK
+```
 
-2. Keep that file next to `docker-compose.yml`, readable only by root and the
-   uid Strata runs as. The compose file mounts it as a secret.
-3. Open Strata over **HTTPS**, through your reverse proxy. The session cookie
-   is `Secure`, so sign-in is refused over plain HTTP (except on localhost).
-   Set `STRATA_TRUSTED_PROXIES` to the proxy's address or Docker network so
-   Strata believes its `X-Forwarded-Proto` and `X-Forwarded-For` headers.
+Open Strata, enter the code, and choose a passphrase (12+ characters). The
+code proves you can read the app's logs, so someone who merely reaches the
+port first can't claim your instance. Only the argon2id hash is stored, in
+`/config/auth.hash`.
+
+**Forgot the passphrase?** Delete `/config/auth.hash` and restart; a new
+setup code is printed.
+
+**HTTPS.** Strata serves HTTPS itself unless told otherwise:
+
+- With `STRATA_TLS_CERT` and `STRATA_TLS_KEY`, it uses that certificate.
+- Without them, it creates a self-signed certificate once, keeps it in
+  `/config/tls/`, and logs its SHA-256 fingerprint. Your browser warns the
+  first time; compare the fingerprint before accepting.
+- Behind a reverse proxy that terminates TLS, set `STRATA_TRUSTED_PROXIES`
+  to the proxy's address or Docker network. Strata then serves plain HTTP on
+  that internal network and believes the proxy's `X-Forwarded-Proto` and
+  `X-Forwarded-For`. `STRATA_TLS=off` or `on` overrides the choice.
+
+The session cookie is `Secure`, so sign-in only works over HTTPS (or on
+localhost).
+
+**Without a config volume** you can supply the hash yourself: run
+`docker compose run --rm -it strata hash-password > strata_password` and
+point `STRATA_PASSWORD_FILE` at it (the sample compose mounts it as a secret).
+That file takes precedence over `/config/auth.hash`.
 
 Sessions are kept in memory: restarting the container signs everyone out,
 which is also how a new passphrase takes effect. Five wrong guesses lock a
 client out with growing delays (up to 15 minutes), and there's a global cap
-so rotating addresses doesn't help.
+so rotating addresses doesn't help. The setup code is throttled the same way.
 
 If Strata is only reachable on a network you fully trust, `STRATA_AUTH=none`
 turns sign-in off. It logs a warning on every start.
@@ -163,6 +184,9 @@ better for heavy work.
 | `STRATA_PASSWORD_FILE` | *(none)* | File holding the hash from `strata hash-password`. Strata refuses to start without it unless `STRATA_AUTH=none`. |
 | `STRATA_TRUSTED_PROXIES` | *(empty)* | Comma-separated IPs or CIDRs of your reverse proxy. Only these may set `X-Forwarded-For` / `X-Forwarded-Proto`. |
 | `STRATA_AUTH` | `passphrase` | `none` disables sign-in. Only for networks you fully trust. |
+| `STRATA_CONFIG` | `/config` if mounted | Where Strata keeps its passphrase hash, TLS certificate and saved state. Optional; without it, use `STRATA_PASSWORD_FILE`. |
+| `STRATA_TLS` | `auto` | `auto`: HTTPS, unless behind a trusted proxy with no certificate given. `on` / `off` force it. |
+| `STRATA_TLS_CERT`, `STRATA_TLS_KEY` | *(none)* | PEM certificate and key to serve. Without them, `auto`/`on` use a self-signed pair. |
 | `TZ` | `America/Phoenix` | Zone for displayed timestamps. |
 
 ### Which user it runs as
