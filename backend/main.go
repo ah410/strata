@@ -47,6 +47,9 @@ var embedded embed.FS
 // is generous; the reverse proxy should carry a matching limit.
 const maxUpload = 8 << 30 // 8 GiB
 
+// version is set at build time with -ldflags "-X main.version=...".
+var version = "dev"
+
 var (
 	root     *safepath.Root
 	thumbs   *thumb.Cache
@@ -60,6 +63,9 @@ func main() {
 			os.Exit(healthcheck(envOr("STRATA_ADDR", ":8080")))
 		case "hash-password":
 			os.Exit(hashPassword())
+		case "version", "--version":
+			fmt.Println(version)
+			return
 		}
 	}
 
@@ -90,7 +96,7 @@ func main() {
 		log.Fatalf("root %q unusable: %v", *dir, err)
 	}
 	root = r
-	log.Printf("serving %s on %s", root.Path(), *addr)
+	log.Printf("strata %s serving %s on %s", version, root.Path(), *addr)
 
 	config, err := configDir(*cfgDir)
 	if err != nil {

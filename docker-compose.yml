@@ -1,60 +1,43 @@
-# Strata — drop this into a Dockge stack.
-#
-# IMPORTANT: this app has no login. Only publish it on your tailnet.
-# Do not map it to a public port or point a public DNS record at it.
+# Strata: a sample stack for Dockge or `docker compose up -d`.
+# See README "Deploy" for the TrueNAS walkthrough.
 
 services:
   strata:
-    build: .
-    # Once you have pushed an image somewhere, swap `build` for:
-    # image: ghcr.io/<you>/strata:latest
+    image: ghcr.io/ah410/strata:1
+    # To build from source instead: build: .
     container_name: strata
     restart: unless-stopped
 
-    environment:
-      # Display name in the sidebar.
-      STRATA_NAME: "Strata"
-      # Timestamps render in this zone.
-      TZ: "America/Phoenix"
-      # Sign-in: either mount /config below and use the first-run setup
-      # code from the logs, or supply a hash file (see README "Sign-in").
-      STRATA_PASSWORD_FILE: /run/secrets/strata_password
-      # The hostname you open Strata by through your proxy.
-      # STRATA_ALLOWED_HOSTS: "strata.example.com"
-      # Your proxy's Docker network, so its forwarded headers are believed.
-      # STRATA_TRUSTED_PROXIES: "172.18.0.0/16"
+    # A uid:gid with write access to your dataset, e.g. a dedicated user with
+    # a Modify ACL entry. The image default (65532) usually has none.
+    user: "1000:1000"
 
-    secrets:
-      - strata_password
+    environment:
+      # The hostname you open Strata by. IPs and localhost always work.
+      # STRATA_ALLOWED_HOSTS: "strata.example.com"
+      # Behind a reverse proxy: its address or Docker network. Strata then
+      # serves plain HTTP to it and trusts its X-Forwarded-* headers.
+      # STRATA_TRUSTED_PROXIES: "172.18.0.0/16"
+      TZ: "Etc/UTC"
 
     volumes:
-      # ── Point this at the TrueNAS dataset you want to browse. ──
-      # Left side  = host path on TrueNAS (your dataset)
-      # Right side = always /data
-      #
-      # Read-write (needed for uploads and sheet editing):
+      # Left: the dataset to browse. Right: always /data.
       - /mnt/tank/documents:/data
-      # Passphrase hash, TLS certificate and saved state. Any small dataset.
-      # - /mnt/tank/apps/strata-config:/config
-      #
-      # If you would rather start read-only, append :ro —
-      #   - /mnt/tank/documents:/data:ro
-      # Uploads and sheet saves will fail with a clear error in that mode.
+      # Passphrase hash, TLS certificate, thumbnails, favorites. Any small
+      # directory writable by the user above.
+      - /mnt/tank/apps/strata:/config
 
     ports:
-      # Bound to localhost only. Nginx Proxy Manager reaches it over the
-      # Docker network, so nothing needs to listen on the LAN.
-      # If NPM runs in a different stack, see the networks note in README.
-      - "127.0.0.1:8080:8080"
+      # HTTPS with a self-signed certificate unless you give it one.
+      - "8443:8080"
 
-    # The image runs as uid 65532 by default. Set this to a uid:gid that has
-    # write access to your dataset (e.g. a dedicated user with an ACL entry).
-    # user: "1000:1000"
-
-    # Nothing in the container needs to be writable except the share itself.
     read_only: true
+    tmpfs:
+      - /tmp:size=64m
     cap_drop:
       - ALL
+    security_opt:
+      - no-new-privileges:true
 
     healthcheck:
       test: ["CMD", "/usr/local/bin/strata", "healthcheck"]
@@ -62,12 +45,3 @@ services:
       timeout: 4s
       retries: 3
       start_period: 5s
-
-    # The container needs no extra privileges to read a bind mount.
-    security_opt:
-      - no-new-privileges:true
-
-secrets:
-  strata_password:
-    # Created with: docker compose run --rm -it strata hash-password > strata_password
-    file: ./strata_password
