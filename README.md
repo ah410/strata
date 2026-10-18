@@ -37,10 +37,12 @@ Created with Claude as a POC.
 
 ### TrueNAS SCALE
 
-Install **Strata** from the Apps catalog, pick the dataset to browse, and
-give the app's user (568 `apps` by default) a **Modify** ACL entry on it.
-Once it's running, open the app's logs, copy the setup code, and open the web
-UI to choose a passphrase.
+Strata is [submitted to the TrueNAS community catalog](https://github.com/truenas/apps/pull/6142)
+and pending review. Once it's listed, install **Strata** from Apps, pick the
+dataset to browse, and give the app's user (568 `apps` by default) a
+**Modify** ACL entry on it. When it's running, open the app's logs, copy the
+setup code, and open the Web UI to choose a passphrase. Until then, use the
+compose file below.
 
 ### Docker Compose (or a Dockge stack)
 
