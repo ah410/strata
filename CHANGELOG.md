@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1 (2026-10-17)
+
+- The container health check no longer reports a running server as unhealthy
+  when the certificate it was given has expired. It still trusts only that
+  exact certificate.
+
 ## 1.0.0 (2026-10-17)
 
 The first release, and the first one meant for people other than its author.
