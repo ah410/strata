@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type Cell, type Entry, type Grid } from "../lib/api";
+import { api, ApiError, type Cell, type Entry, type Grid } from "../lib/api";
 import { colName } from "../lib/format";
 import { isDark, luminance, readableOn, setScopeTheme, themeVars, useScopeTheme } from "../lib/themes";
 import { ThemeSelect } from "./Appearance";
 
-type SaveState = "idle" | "saving" | "saved" | "failed";
+type SaveState = "idle" | "saving" | "saved" | "failed" | "conflict";
 
 /**
  * Spreadsheet editor.
@@ -70,11 +70,13 @@ export function SheetEditor({ entry, onClose }: { entry: Entry; onClose: () => v
       setDraft(null);
       setSave("saving");
       try {
-        const next = await api.saveSheet(entry.path, grid.active, [{ ref, value }]);
+        const next = await api.saveSheet(entry.path, grid.active, grid.version, [{ ref, value }]);
         setGrid(next);
         setSave("saved");
         setTimeout(() => setSave((s) => (s === "saved" ? "idle" : s)), 1600);
       } catch (e) {
+        // Someone else saved first. Keep their work; offer a reload instead.
+        if (e instanceof ApiError && e.status === 409) return setSave("conflict");
         setError((e as Error).message);
         setSave("failed");
       }
@@ -289,6 +291,21 @@ export function SheetEditor({ entry, onClose }: { entry: Entry; onClose: () => v
         {save === "saving" && <span className="saving">Saving…</span>}
         {save === "saved" && <span className="saved">Saved</span>}
         {save === "failed" && <span className="failed">{error ?? "Save failed"}</span>}
+        {save === "conflict" && (
+          <span className="failed">
+            This file changed since you opened it. Your last edit was not saved.{" "}
+            <button
+              className="btn"
+              style={{ height: 22, padding: "0 8px", marginLeft: 6 }}
+              onClick={() => {
+                setSave("idle");
+                load(grid.active);
+              }}
+            >
+              Reload
+            </button>
+          </span>
+        )}
       </div>
     </Shell>
   );
