@@ -58,6 +58,7 @@ func TestProvidedPairAndModes(t *testing.T) {
 	if _, _, err := Config("maybe", "", "", dir, nil); err == nil {
 		t.Error("unknown mode accepted")
 	}
+	t.Setenv("TMPDIR", t.TempDir())
 	if c, _, err := Config("auto", "", "", "", nil); err != nil || c == nil {
 		t.Error("no config dir should still give an in-memory pair")
 	}

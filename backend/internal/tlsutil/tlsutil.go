@@ -47,9 +47,13 @@ func Config(mode, certFile, keyFile, dir string, hosts []string) (*tls.Config, s
 	case dir != "":
 		cert, err = selfSigned(filepath.Join(dir, "tls"), hosts)
 	default:
-		var certPEM, keyPEM []byte
-		if certPEM, keyPEM, err = generate(hosts); err == nil {
-			cert, err = tls.X509KeyPair(certPEM, keyPEM)
+		// No config volume: keep the pair in scratch space for this run, so
+		// the healthcheck can pin it. Only if that fails, hold it in memory.
+		if cert, err = selfSigned(filepath.Join(ScratchDir(), "tls"), hosts); err != nil {
+			var certPEM, keyPEM []byte
+			if certPEM, keyPEM, err = generate(hosts); err == nil {
+				cert, err = tls.X509KeyPair(certPEM, keyPEM)
+			}
 		}
 	}
 	if err != nil {
@@ -62,6 +66,10 @@ func Config(mode, certFile, keyFile, dir string, hosts []string) (*tls.Config, s
 		Certificates: []tls.Certificate{cert},
 	}, fingerprint(sum[:]), nil
 }
+
+// ScratchDir is where a run without a config volume keeps its self-signed
+// pair; on a read-only container this is the /tmp tmpfs.
+func ScratchDir() string { return filepath.Join(os.TempDir(), "strata") }
 
 // selfSigned loads dir/cert.pem and dir/key.pem, creating them if absent.
 func selfSigned(dir string, hosts []string) (tls.Certificate, error) {

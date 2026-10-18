@@ -8,8 +8,10 @@ package main
 import (
 	"bufio"
 	"crypto/tls"
+	"crypto/x509"
 	"embed"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -22,6 +24,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -268,7 +271,8 @@ func newHandler(name string, hosts []string, gate *auth.Gate) http.Handler {
 }
 
 // healthcheck probes the local server for the container HEALTHCHECK, since
-// the distroless image has no wget or curl.
+// the distroless image has no wget or curl. Over HTTPS it trusts exactly
+// Strata's own certificate (pinned from disk) rather than skipping checks.
 func healthcheck(addr string) int {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -277,25 +281,72 @@ func healthcheck(addr string) int {
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
-	// The probe can't know which TLS mode the server chose, so try HTTPS
-	// first. Skipping verification is fine: it only ever talks to loopback.
-	c := http.Client{
-		Timeout: 3 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // #nosec G402 -- loopback probe
-		},
-	}
-	for _, scheme := range []string{"https", "http"} {
-		res, err := c.Get(scheme + "://" + net.JoinHostPort(host, port) + "/api/health")
-		if err != nil {
-			continue
-		}
-		res.Body.Close()
-		if res.StatusCode == http.StatusOK {
+	target := net.JoinHostPort(host, port)
+
+	pool, name := pinnedCert()
+	if pool != nil {
+		c := http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: name, MinVersion: tls.VersionTLS12},
+		}}
+		if probe(c, "https://"+target) {
 			return 0
 		}
 	}
+	if probe(http.Client{Timeout: 3 * time.Second}, "http://"+target) {
+		return 0
+	}
 	return 1
+}
+
+func probe(c http.Client, base string) bool {
+	res, err := c.Get(base + "/api/health")
+	if err != nil {
+		return false
+	}
+	res.Body.Close()
+	return res.StatusCode == http.StatusOK
+}
+
+// pinnedCert loads the certificate the server is serving, from the same
+// settings the server reads, and picks a name it is valid for.
+func pinnedCert() (*x509.CertPool, string) {
+	files := []string{os.Getenv("STRATA_TLS_CERT")}
+	if files[0] == "" {
+		files = []string{
+			filepath.Join(envOr("STRATA_CONFIG", "/config"), "tls", "cert.pem"),
+			filepath.Join(tlsutil.ScratchDir(), "tls", "cert.pem"),
+		}
+	}
+	var raw []byte
+	for _, f := range files {
+		if b, err := os.ReadFile(f); err == nil {
+			raw = b
+			break
+		}
+	}
+	if raw == nil {
+		return nil, ""
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return nil, ""
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, ""
+	}
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(raw)
+	pool.AddCert(leaf)
+	switch {
+	case slices.Contains(leaf.DNSNames, "localhost"):
+		return pool, "localhost"
+	case len(leaf.DNSNames) > 0:
+		return pool, leaf.DNSNames[0]
+	case len(leaf.IPAddresses) > 0:
+		return pool, leaf.IPAddresses[0].String()
+	}
+	return nil, ""
 }
 
 func envOr(key, fallback string) string {
