@@ -30,6 +30,11 @@ export interface Version {
   size: number;
 }
 
+export interface SearchResult {
+  entries: Entry[];
+  truncated: boolean;
+}
+
 export interface Usage {
   total: number;
   free: number;
@@ -104,7 +109,7 @@ const q = (p: string) => encodeURIComponent(p);
 
 /** Fired when the server says the session is gone, so the UI can ask again. */
 export const SIGNED_OUT = "strata:signed-out";
-const signedOut = () => window.dispatchEvent(new Event(SIGNED_OUT));
+export const signedOut = () => window.dispatchEvent(new Event(SIGNED_OUT));
 
 export const api = {
   /** Resolves to whether sign-in is enabled; rejects with 401 when signed out. */
@@ -196,28 +201,10 @@ export const api = {
 
   versionUrl: (path: string, id: string) => `/api/versions/download?path=${q(path)}&id=${q(id)}`,
 
-  upload: (dir: string, files: FileList | File[], onProgress?: (pct: number) => void) =>
-    new Promise<void>((resolve, reject) => {
-      const form = new FormData();
-      for (const f of Array.from(files)) form.append("file", f, f.name);
+  search: (path: string, query: string, signal?: AbortSignal) =>
+    req<SearchResult>(`/api/search?path=${q(path)}&q=${q(query)}`, { signal }),
 
-      // XHR rather than fetch, because fetch still cannot report upload
-      // progress and these are NAS-sized files.
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", `/api/upload?path=${q(dir)}`);
-      xhr.setRequestHeader("X-Strata", "1");
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable && onProgress) onProgress((e.loaded / e.total) * 100);
-      };
-      xhr.onload = () => {
-        if (xhr.status === 401) signedOut();
-        return xhr.status >= 200 && xhr.status < 300
-          ? resolve()
-          : reject(new Error(xhr.responseText.trim() || `Upload failed (${xhr.status})`));
-      };
-      xhr.onerror = () => reject(new Error("Upload failed"));
-      xhr.send(form);
-    }),
+  zipUrl: (paths: string[]) => `/api/zip?${paths.map((p) => `path=${q(p)}`).join("&")}`,
 
   downloadUrl: (path: string) => `/api/download?path=${q(path)}`,
   rawUrl: (path: string) => `/api/raw?path=${q(path)}`,

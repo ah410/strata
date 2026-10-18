@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, type Entry, type Listing } from "./lib/api";
+import { api, ApiError, type Entry, type Listing, type SearchResult } from "./lib/api";
+import { fromDrop, fromInput, uploadAll, type UploadItem } from "./lib/upload";
 import { bytes, joinPath, parentOf, when } from "./lib/format";
 import { Capacity } from "./components/Capacity";
 import { Glyph } from "./components/Glyph";
@@ -8,6 +9,10 @@ import { SheetEditor } from "./components/SheetEditor";
 import { AppearanceDialog } from "./components/Appearance";
 import { History } from "./components/History";
 import { TrashView } from "./components/TrashView";
+import { FolderPicker } from "./components/FolderPicker";
+
+// Rows dragged inside Strata carry their paths under this type.
+const DRAG_TYPE = "application/x-strata-paths";
 
 type SortKey = "name" | "size" | "modified" | "kind";
 type Note = { text: string; error?: boolean; action?: { label: string; run: () => void } } | null;
@@ -30,10 +35,18 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [historyPath, setHistoryPath] = useState<string | null>(null);
   const closeHistory = useCallback(() => setHistoryPath(null), []);
   const noteTimer = useRef<number>();
+  const [query, setQuery] = useState("");
+  const [found, setFound] = useState<SearchResult | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [picker, setPicker] = useState<null | "move" | "copy">(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
 
   const fileInput = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
 
+  const [searchTick, setSearchTick] = useState(0);
   const refresh = useCallback(() => {
+    setSearchTick((n) => n + 1);
     api.list(path).then(
       (l) => {
         setListing(l);
@@ -53,6 +66,25 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     refresh();
     history.replaceState(null, "", `#${encodeURIComponent(path)}`);
   }, [refresh, path, view]);
+
+  // Search the current folder as the user types; a newer query cancels the last.
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setFound(null);
+      setSearching(false);
+      return;
+    }
+    const ctl = new AbortController();
+    setSearching(true);
+    const t = window.setTimeout(() => {
+      api.search(path, q, ctl.signal).then(
+        (r) => { setFound(r); setPicked(new Set()); setSearching(false); },
+        (e: Error) => { if (e.name !== "AbortError") { setError(e.message); setSearching(false); } }
+      );
+    }, 250);
+    return () => { window.clearTimeout(t); ctl.abort(); };
+  }, [query, path, searchTick]);
 
   // Browser back/forward should walk the directory history.
   useEffect(() => {
@@ -79,6 +111,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   };
 
   const navigate = (to: string) => {
+    setQuery("");
     setView("files");
     setPath(to);
     setRailOpen(false);
@@ -92,8 +125,12 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     window.location.href = api.downloadUrl(e.path);
   };
 
+  const searchMode = found !== null;
+  const shown = searchMode ? found.entries : listing?.entries ?? [];
+  const pickedEntries = shown.filter((e) => picked.has(e.path));
+
   const rows = useMemo(() => {
-    const list = [...(listing?.entries ?? [])];
+    const list = [...shown];
     const dir = sort.desc ? -1 : 1;
     list.sort((a, b) => {
       // Directories stay grouped above files regardless of sort column.
@@ -106,20 +143,18 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       }
     });
     return list;
-  }, [listing, sort]);
+  }, [listing, found, sort]);
 
   const crumbs = useMemo(() => {
     const parts = path ? path.split("/") : [];
     return parts.map((name, i) => ({ name, path: parts.slice(0, i + 1).join("/") }));
   }, [path]);
 
-  const upload = async (files: FileList | File[]) => {
-    // Copy now: the file input is cleared right after this call, which
-    // empties a live FileList before the upload finishes.
-    const list = Array.from(files);
+  const upload = async (list: UploadItem[]) => {
+    if (!list.length) return;
     setUploadPct(0);
     try {
-      await api.upload(path, list, setUploadPct);
+      await uploadAll(path, list, setUploadPct);
       toast(`Uploaded ${list.length} file${list.length === 1 ? "" : "s"}`);
       refresh();
     } catch (e) {
@@ -169,6 +204,56 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       });
     }
   };
+
+  const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+  // Moves or copies each path into dest, keeping its name.
+  const transfer = async (paths: string[], dest: string, copy: boolean) => {
+    const todo = paths.filter((p) => copy || parentOf(p) !== dest);
+    if (!todo.length) return;
+    let ok = 0;
+    for (const p of todo) {
+      if (dest === p || dest.startsWith(p + "/")) {
+        toast(`Can't ${copy ? "copy" : "move"} a folder into itself`, true);
+        continue;
+      }
+      try {
+        const to = joinPath(dest, p.split("/").pop()!);
+        await (copy ? api.copy(p, to) : api.move(p, to));
+        ok++;
+      } catch (e) {
+        toast(`${p.split("/").pop()}: ${(e as Error).message}`, true);
+      }
+    }
+    if (ok) toast(`${copy ? "Copied" : "Moved"} ${plural(ok, "item")} to /${dest}`);
+    refresh();
+  };
+
+  const downloadPicked = () => {
+    const sel = pickedEntries;
+    if (sel.length === 1 && !sel[0].isDir) window.location.href = api.downloadUrl(sel[0].path);
+    else if (sel.length) window.location.href = api.zipUrl(sel.map((e) => e.path));
+  };
+
+  const dragPaths = (e: Entry) => (picked.has(e.path) ? [...picked] : [e.path]);
+  const dropProps = (dest: string) => ({
+    onDragOver: (ev: React.DragEvent) => {
+      if (!ev.dataTransfer.types.includes(DRAG_TYPE)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.dataTransfer.dropEffect = ev.ctrlKey || ev.altKey ? "copy" : "move";
+      setDropTarget(dest);
+    },
+    onDragLeave: () => setDropTarget((t) => (t === dest ? null : t)),
+    onDrop: (ev: React.DragEvent) => {
+      if (!ev.dataTransfer.types.includes(DRAG_TYPE)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      setDropTarget(null);
+      const paths = JSON.parse(ev.dataTransfer.getData(DRAG_TYPE) || "[]") as string[];
+      transfer(paths.filter((p) => p !== dest), dest, ev.ctrlKey || ev.altKey);
+    },
+  });
 
   const renamePicked = () => {
     const target = [...picked][0];
@@ -278,17 +363,32 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
           </button>
 
           <div className="crumbs">
-            <button className="crumb" onClick={() => navigate("")}>
+            <button className={`crumb${dropTarget === "" ? " drop-on" : ""}`} onClick={() => navigate("")} {...dropProps("")}>
               /
             </button>
             {crumbs.map((c, i) => (
               <span key={c.path} style={{ display: "contents" }}>
                 {i > 0 && <span className="crumb-sep">/</span>}
-                <button className="crumb" onClick={() => navigate(c.path)}>
+                <button
+                  className={`crumb${dropTarget === c.path ? " drop-on" : ""}`}
+                  onClick={() => navigate(c.path)}
+                  {...dropProps(c.path)}
+                >
                   {c.name}
                 </button>
               </span>
             ))}
+          </div>
+
+          <div className="search">
+            <input
+              type="search"
+              placeholder={path ? `Search in ${path.split("/").pop()}` : "Search all files"}
+              aria-label="Search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.key === "Escape" && setQuery("")}
+            />
           </div>
 
           <div className="actions">
@@ -297,22 +397,26 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
                 Rename
               </button>
             )}
-            {picked.size === 1 && !listing?.entries.find((e) => e.path === [...picked][0])?.isDir && (
+            {picked.size === 1 && pickedEntries[0] && !pickedEntries[0].isDir && (
               <button className="btn" onClick={() => setHistoryPath([...picked][0])}>
                 History
               </button>
             )}
             {picked.size > 0 && (
-              <button className="btn danger" onClick={removePicked}>
-                Delete
-              </button>
+              <>
+                <button className="btn" onClick={() => setPicker("move")}>Move</button>
+                <button className="btn" onClick={() => setPicker("copy")}>Copy</button>
+                <button className="btn" onClick={downloadPicked}>Download</button>
+                <button className="btn danger" onClick={removePicked}>Delete</button>
+              </>
             )}
-            <button className="btn" onClick={newFolder}>
-              New folder
-            </button>
-            <button className="btn primary" onClick={() => fileInput.current?.click()}>
-              Upload
-            </button>
+            {picked.size === 0 && (
+              <>
+                <button className="btn" onClick={newFolder}>New folder</button>
+                <button className="btn" onClick={() => folderInput.current?.click()}>Upload folder</button>
+                <button className="btn primary" onClick={() => fileInput.current?.click()}>Upload</button>
+              </>
+            )}
           </div>
         </div>
 
@@ -321,6 +425,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
         <div
           className={`listing${dragging ? " dropping" : ""}`}
           onDragOver={(e) => {
+            if (!e.dataTransfer.types.includes("Files")) return;
             e.preventDefault();
             setDragging(true);
           }}
@@ -328,9 +433,10 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
             if (e.currentTarget === e.target) setDragging(false);
           }}
           onDrop={(e) => {
+            if (!e.dataTransfer.types.includes("Files")) return;
             e.preventDefault();
             setDragging(false);
-            if (e.dataTransfer.files.length) upload(e.dataTransfer.files);
+            fromDrop(e.dataTransfer).then(upload, (err: Error) => toast(err.message, true));
           }}
         >
           {error && (
@@ -340,7 +446,21 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
             </div>
           )}
 
-          {!error && listing && rows.length === 0 && (
+          {searchMode && (
+            <div className="search-note">
+              {searching ? "Searching…" : `${found.entries.length} match${found.entries.length === 1 ? "" : "es"}${found.truncated ? " (showing the first; narrow the search)" : ""}`}
+              <button className="btn" style={{ height: 24 }} onClick={() => setQuery("")}>Clear</button>
+            </div>
+          )}
+
+          {!error && searchMode && rows.length === 0 && !searching && (
+            <div className="state">
+              <h2>No matches</h2>
+              <p>Search looks at file and folder names below this folder.</p>
+            </div>
+          )}
+
+          {!error && !searchMode && listing && rows.length === 0 && (
             <div className="state">
               <h2>Nothing here yet</h2>
               <p>Drop files anywhere in this pane, or use Upload.</p>
@@ -351,16 +471,34 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
             <table className="table">
               <thead>
                 <tr>
-                  <th className="col-pick" />
+                  <th className="col-pick">
+                    <input
+                      type="checkbox"
+                      className="pick"
+                      aria-label="Select all"
+                      checked={rows.length > 0 && rows.every((e) => picked.has(e.path))}
+                      onChange={(ev) => setPicked(ev.target.checked ? new Set(rows.map((e) => e.path)) : new Set())}
+                    />
+                  </th>
                   <SortHead label="Name" k="name" sort={sort} setSort={setSort} />
                   <SortHead label="Size" k="size" sort={sort} setSort={setSort} num />
                   <SortHead label="Modified" k="modified" sort={sort} setSort={setSort} />
-                  <SortHead label="Kind" k="kind" sort={sort} setSort={setSort} />
+                  {searchMode ? <th className="col-where">Folder</th> : <SortHead label="Kind" k="kind" sort={sort} setSort={setSort} />}
                 </tr>
               </thead>
               <tbody>
                 {rows.map((e) => (
-                  <tr key={e.path} className={`row${picked.has(e.path) ? " selected" : ""}`}>
+                  <tr
+                    key={e.path}
+                    className={`row${picked.has(e.path) ? " selected" : ""}${dropTarget === e.path ? " drop-on" : ""}`}
+                    draggable
+                    onDragStart={(ev) => {
+                      ev.dataTransfer.setData(DRAG_TYPE, JSON.stringify(dragPaths(e)));
+                      ev.dataTransfer.effectAllowed = "copyMove";
+                    }}
+                    onDragEnd={() => setDropTarget(null)}
+                    {...(e.isDir ? dropProps(e.path) : {})}
+                  >
                     <td className="col-pick">
                       <input
                         type="checkbox"
@@ -386,7 +524,13 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
                     </td>
                     <td className="col-size">{e.isDir ? "—" : bytes(e.size)}</td>
                     <td className="col-when">{when(e.modified)}</td>
-                    <td className="col-kind">{e.isDir ? "folder" : e.kind}</td>
+                    {searchMode ? (
+                      <td className="col-where">
+                        <button className="link" onClick={() => navigate(parentOf(e.path))}>/{parentOf(e.path)}</button>
+                      </td>
+                    ) : (
+                      <td className="col-kind">{e.isDir ? "folder" : e.kind}</td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -403,10 +547,32 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
         multiple
         hidden
         onChange={(e) => {
-          if (e.target.files?.length) upload(e.target.files);
+          // Copy before clearing: clearing empties the live FileList.
+          if (e.target.files?.length) upload(fromInput(e.target.files));
           e.target.value = "";
         }}
       />
+      <input
+        ref={folderInput}
+        type="file"
+        hidden
+        {...{ webkitdirectory: "" }}
+        onChange={(e) => {
+          if (e.target.files?.length) upload(fromInput(e.target.files));
+          e.target.value = "";
+        }}
+      />
+
+      {picker && (
+        <FolderPicker
+          title={`${picker === "move" ? "Move" : "Copy"} ${plural(picked.size, "item")} to…`}
+          action={picker === "move" ? "Move" : "Copy"}
+          start={path}
+          blocked={pickedEntries.filter((e) => e.isDir).map((e) => e.path)}
+          onPick={(dest) => transfer([...picked], dest, picker === "copy")}
+          onClose={() => setPicker(null)}
+        />
+      )}
 
       {open && open.kind === "sheet" && (
         <SheetEditor entry={open} onClose={() => { setOpen(null); refresh(); }} />
