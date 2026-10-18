@@ -341,10 +341,15 @@ func healthcheck(addr string) int {
 	}
 	target := net.JoinHostPort(host, port)
 
-	pool, name := pinnedCert()
+	pool, name, leaf := pinnedCert()
 	if pool != nil {
 		c := http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: name, MinVersion: tls.VersionTLS12},
+			TLSClientConfig: &tls.Config{
+				RootCAs: pool, ServerName: name, MinVersion: tls.VersionTLS12,
+				// Liveness, not certificate hygiene: an expired certificate
+				// still identifies our own server, so check at a valid moment.
+				Time: func() time.Time { return validAt(leaf, time.Now()) },
+			},
 		}}
 		if probe(c, "https://"+target) {
 			return 0
@@ -365,9 +370,17 @@ func probe(c http.Client, base string) bool {
 	return res.StatusCode == http.StatusOK
 }
 
+// validAt returns now, or a moment inside the leaf's validity if now isn't.
+func validAt(leaf *x509.Certificate, now time.Time) time.Time {
+	if now.Before(leaf.NotBefore) || now.After(leaf.NotAfter) {
+		return leaf.NotBefore.Add(leaf.NotAfter.Sub(leaf.NotBefore) / 2)
+	}
+	return now
+}
+
 // pinnedCert loads the certificate the server is serving, from the same
 // settings the server reads, and picks a name it is valid for.
-func pinnedCert() (*x509.CertPool, string) {
+func pinnedCert() (*x509.CertPool, string, *x509.Certificate) {
 	files := []string{os.Getenv("STRATA_TLS_CERT")}
 	if files[0] == "" {
 		files = []string{
@@ -383,28 +396,28 @@ func pinnedCert() (*x509.CertPool, string) {
 		}
 	}
 	if raw == nil {
-		return nil, ""
+		return nil, "", nil
 	}
 	block, _ := pem.Decode(raw)
 	if block == nil {
-		return nil, ""
+		return nil, "", nil
 	}
 	leaf, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return nil, ""
+		return nil, "", nil
 	}
 	pool := x509.NewCertPool()
 	pool.AppendCertsFromPEM(raw)
 	pool.AddCert(leaf)
 	switch {
 	case slices.Contains(leaf.DNSNames, "localhost"):
-		return pool, "localhost"
+		return pool, "localhost", leaf
 	case len(leaf.DNSNames) > 0:
-		return pool, leaf.DNSNames[0]
+		return pool, leaf.DNSNames[0], leaf
 	case len(leaf.IPAddresses) > 0:
-		return pool, leaf.IPAddresses[0].String()
+		return pool, leaf.IPAddresses[0].String(), leaf
 	}
-	return nil, ""
+	return nil, "", nil
 }
 
 func envInt(key string, fallback int) int {
