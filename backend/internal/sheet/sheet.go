@@ -111,7 +111,11 @@ func Read(root *safepath.Root, rel, active string) (*Grid, error) {
 // open reads a workbook through the root, bounded in size, and reports the
 // version of the bytes it read.
 func open(root *safepath.Root, rel string) (*excelize.File, string, error) {
-	fh, err := root.FS().Open(safepath.Clean(rel))
+	rel, err := safepath.User(rel)
+	if err != nil {
+		return nil, "", err
+	}
+	fh, err := root.FS().Open(rel)
 	if err != nil {
 		return nil, "", safepath.Err(err)
 	}

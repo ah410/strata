@@ -125,3 +125,16 @@ func TestDirectorySwappedForSymlink(t *testing.T) {
 		t.Fatal("file landed outside the root")
 	}
 }
+
+func TestUserRefusesInternalDir(t *testing.T) {
+	for _, p := range []string{".strata", "/.strata/trash/x", "docs/../.strata", `.strata\versions`, "media/.strata/trash", "../.strata"} {
+		if _, err := User(p); !errors.Is(err, ErrReserved) || !errors.Is(err, ErrEscape) {
+			t.Errorf("User(%q) = %v, want ErrReserved", p, err)
+		}
+	}
+	for _, p := range []string{"", "docs", ".strata-notes", "x/.stratafile", "a/b"} {
+		if _, err := User(p); err != nil {
+			t.Errorf("User(%q) = %v, want ok", p, err)
+		}
+	}
+}

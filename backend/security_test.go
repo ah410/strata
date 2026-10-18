@@ -153,3 +153,38 @@ func TestSecurityHeadersOnUI(t *testing.T) {
 		t.Error("inline scripts allowed")
 	}
 }
+
+func TestInternalDirIsUnreachable(t *testing.T) {
+	h, dir := testServer(t)
+	os.MkdirAll(filepath.Join(dir, ".strata", "trash"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".strata", "trash", "secret.txt"), []byte("deleted"), 0o644)
+	post := map[string]string{"Content-Type": "application/json", "X-Strata": "1"}
+
+	gets := []string{
+		"/api/list?path=.strata", "/api/list?path=.strata/trash",
+		"/api/raw?path=.strata/trash/secret.txt", "/api/download?path=/.strata/trash/secret.txt",
+		"/api/text?path=.strata/trash/secret.txt", "/api/sheet?path=.strata/x.xlsx",
+	}
+	for _, p := range gets {
+		if got := do(h, "GET", p, "strata.example.com", "", nil).Code; got != http.StatusForbidden {
+			t.Errorf("GET %s: %d, want 403", p, got)
+		}
+	}
+	posts := map[string]string{
+		"/api/mkdir":  `{"path":".strata/new"}`,
+		"/api/delete": `{"path":".strata"}`,
+		"/api/move":   `{"from":".strata/trash/secret.txt","to":"stolen.txt"}`,
+		"/api/copy":   `{"from":"a","to":".strata/trash/planted"}`,
+	}
+	for p, body := range posts {
+		if got := do(h, "POST", p, "strata.example.com", body, post).Code; got != http.StatusForbidden {
+			t.Errorf("POST %s %s: %d, want 403", p, body, got)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".strata", "trash", "secret.txt")); err != nil {
+		t.Fatal("internal file was touched")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stolen.txt")); err == nil {
+		t.Fatal("internal file was moved out")
+	}
+}
