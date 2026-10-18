@@ -3,26 +3,38 @@
 A small file manager for a TrueNAS share. Browse, upload, preview, and edit
 `.xlsx` workbooks in the browser — formulas intact.
 
-Single Go binary with the UI embedded. ~25 MB image, no database, no state
+Single Go binary with the UI embedded. ~18 MB image, no database, no state
 of its own.
 
 Created with Claude as a POC.
 
 ---
 
-## ⚠️ Read this first
+## Sign-in
 
-**Strata has no authentication.** It is built to sit behind Tailscale, where
-the tailnet is the boundary. That is a deliberate trade — it is why there are
-no accounts to manage and no session store.
+Strata asks for a passphrase before showing anything. There are no user
+accounts: one passphrase, hashed with argon2id, unlocks it.
 
-Do not:
-- map it to `0.0.0.0` on a LAN you share with other people
-- point a public DNS record at it
-- expose it through a Cloudflare tunnel without an Access policy in front
+1. Create the hash. It prompts twice without echoing:
 
-If any of those are your plan, put HTTP Basic auth on the Nginx Proxy Manager
-proxy host first.
+   ```bash
+   docker compose run --rm -it strata hash-password > strata_password
+   ```
+
+2. Keep that file next to `docker-compose.yml`, readable only by root and the
+   uid Strata runs as. The compose file mounts it as a secret.
+3. Open Strata over **HTTPS**, through your reverse proxy. The session cookie
+   is `Secure`, so sign-in is refused over plain HTTP (except on localhost).
+   Set `STRATA_TRUSTED_PROXIES` to the proxy's address or Docker network so
+   Strata believes its `X-Forwarded-Proto` and `X-Forwarded-For` headers.
+
+Sessions are kept in memory: restarting the container signs everyone out,
+which is also how a new passphrase takes effect. Five wrong guesses lock a
+client out with growing delays (up to 15 minutes), and there's a global cap
+so rotating addresses doesn't help.
+
+If Strata is only reachable on a network you fully trust, `STRATA_AUTH=none`
+turns sign-in off. It logs a warning on every start.
 
 ---
 
@@ -126,9 +138,13 @@ downstream of it — exactly as Excel would.
 
 ## Does editing here conflict with editing over SMB?
 
-Yes, if you do both at once. Strata writes the whole file on save, so if the
-workbook is open in Excel over an SMB mount at the same time, whichever saves
-last wins and the other's changes are gone.
+Strata won't overwrite someone else's save. Each edit is checked against the
+version the editor loaded; if the file changed since (Excel over SMB, another
+tab), the edit is refused and Strata offers to reload. Saves are atomic, so a
+crash mid-save never leaves a half-written workbook.
+
+Excel has no such check, though: if Strata saves while the workbook is open in
+Excel, Excel's next save wins.
 
 In practice: use one or the other for a given editing session. Strata is the
 convenient path from a phone or a borrowed laptop; SMB plus real Excel is
@@ -144,6 +160,9 @@ better for heavy work.
 | `STRATA_ADDR` | `:8080` | Listen address. |
 | `STRATA_NAME` | `Strata` | Name shown in the sidebar. |
 | `STRATA_ALLOWED_HOSTS` | *(empty)* | Comma-separated hostnames you open Strata by, e.g. `strata.example.com`. IP addresses and `localhost` always work; any other `Host` is refused, which blocks DNS-rebinding attacks. |
+| `STRATA_PASSWORD_FILE` | *(none)* | File holding the hash from `strata hash-password`. Strata refuses to start without it unless `STRATA_AUTH=none`. |
+| `STRATA_TRUSTED_PROXIES` | *(empty)* | Comma-separated IPs or CIDRs of your reverse proxy. Only these may set `X-Forwarded-For` / `X-Forwarded-Proto`. |
+| `STRATA_AUTH` | `passphrase` | `none` disables sign-in. Only for networks you fully trust. |
 | `TZ` | `America/Phoenix` | Zone for displayed timestamps. |
 
 ### Which user it runs as

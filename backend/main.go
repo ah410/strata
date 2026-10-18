@@ -6,10 +6,12 @@
 package main
 
 import (
+	"bufio"
 	"embed"
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
@@ -22,6 +24,9 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
+	"strata/internal/auth"
 	"strata/internal/fileops"
 	"strata/internal/safepath"
 	"strata/internal/sheet"
@@ -39,8 +44,13 @@ const maxUpload = 8 << 30 // 8 GiB
 var root *safepath.Root
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		os.Exit(healthcheck(envOr("STRATA_ADDR", ":8080")))
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "healthcheck":
+			os.Exit(healthcheck(envOr("STRATA_ADDR", ":8080")))
+		case "hash-password":
+			os.Exit(hashPassword())
+		}
 	}
 
 	var (
@@ -50,6 +60,11 @@ func main() {
 		// Hostnames (no port) the UI is reached by, e.g. strata.example.com.
 		// IP addresses and localhost always work; anything else is refused.
 		hosts = flag.String("allowed-hosts", envOr("STRATA_ALLOWED_HOSTS", ""), "comma-separated hostnames")
+		// File holding the argon2id hash from `strata hash-password`.
+		pwFile = flag.String("password-file", envOr("STRATA_PASSWORD_FILE", ""), "passphrase hash file")
+		// Proxies (IPs or CIDRs) whose X-Forwarded-* headers are believed.
+		proxies  = flag.String("trusted-proxies", envOr("STRATA_TRUSTED_PROXIES", ""), "comma-separated proxy IPs/CIDRs")
+		authMode = flag.String("auth", envOr("STRATA_AUTH", "passphrase"), `"passphrase" or "none"`)
 	)
 	flag.Parse()
 
@@ -60,9 +75,14 @@ func main() {
 	root = r
 	log.Printf("serving %s on %s", root.Path(), *addr)
 
+	gate, err := loadGate(*authMode, *pwFile, strings.Split(*proxies, ","))
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           logRequests(newHandler(*name, strings.Split(*hosts, ","))),
+		Handler:           logRequests(newHandler(*name, strings.Split(*hosts, ","), gate)),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    64 << 10,
@@ -71,9 +91,90 @@ func main() {
 	log.Fatal(srv.ListenAndServe())
 }
 
-// newHandler builds the routes behind the request guards.
-func newHandler(name string, hosts []string) http.Handler {
+// loadGate fails closed: without a usable passphrase hash Strata refuses to
+// start, unless auth was switched off explicitly.
+func loadGate(mode, pwFile string, proxies []string) (*auth.Gate, error) {
+	switch mode {
+	case "none":
+		log.Printf("WARNING: STRATA_AUTH=none, anyone who can reach this port can read and delete every file")
+		return nil, nil
+	case "passphrase":
+	default:
+		return nil, fmt.Errorf("STRATA_AUTH must be \"passphrase\" or \"none\", got %q", mode)
+	}
+	if pwFile == "" {
+		return nil, errors.New("no passphrase configured: run `strata hash-password`, save the output to a file, " +
+			"and point STRATA_PASSWORD_FILE at it (or set STRATA_AUTH=none for a trusted network)")
+	}
+	info, err := os.Stat(pwFile)
+	if err != nil {
+		return nil, fmt.Errorf("password file: %w", err)
+	}
+	if info.Mode().Perm()&0o004 != 0 {
+		log.Printf("WARNING: %s is world-readable; restrict it to the strata user", pwFile)
+	}
+	raw, err := os.ReadFile(pwFile)
+	if err != nil {
+		return nil, fmt.Errorf("password file: %w", err)
+	}
+	v, err := auth.NewVerifier(string(raw))
+	if err != nil {
+		return nil, fmt.Errorf("password file %s: %w", pwFile, err)
+	}
+	return auth.NewGate(v, proxies)
+}
+
+// hashPassword prints an argon2id hash for STRATA_PASSWORD_FILE. On a
+// terminal it prompts twice without echo; otherwise it reads one line.
+func hashPassword() int {
+	var pass string
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		fmt.Fprint(os.Stderr, "Passphrase: ")
+		a, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Fprint(os.Stderr, "Again: ")
+		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stderr)
+		if err != nil || string(a) != string(b) {
+			fmt.Fprintln(os.Stderr, "passphrases do not match")
+			return 1
+		}
+		pass = string(a)
+	} else {
+		line, err := bufio.NewReader(io.LimitReader(os.Stdin, 4<<10)).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		pass = strings.TrimRight(line, "\r\n")
+	}
+	h, err := auth.Hash(pass)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Println(h)
+	return 0
+}
+
+// newHandler builds the routes behind the request guards. A nil gate means
+// auth is off.
+func newHandler(name string, hosts []string, gate *auth.Gate) http.Handler {
 	mux := http.NewServeMux()
+
+	if gate != nil {
+		mux.HandleFunc("POST /api/login", gate.Login)
+		mux.HandleFunc("POST /api/logout", gate.Logout)
+		mux.HandleFunc("GET /api/session", gate.Session)
+	} else {
+		mux.HandleFunc("GET /api/session", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, map[string]any{"ok": true, "auth": false})
+		})
+	}
 
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, map[string]any{"ok": true, "name": name})
@@ -92,7 +193,11 @@ func newHandler(name string, hosts []string) http.Handler {
 	mux.HandleFunc("POST /api/delete", handleDelete)
 	mux.HandleFunc("/", handleStatic)
 
-	return web.Guard(mux, hosts)
+	var h http.Handler = mux
+	if gate != nil {
+		h = gate.Require(h)
+	}
+	return web.Guard(h, hosts)
 }
 
 // healthcheck probes the local server for the container HEALTHCHECK, since

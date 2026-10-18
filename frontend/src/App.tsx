@@ -10,7 +10,7 @@ import { AppearanceDialog } from "./components/Appearance";
 type SortKey = "name" | "size" | "modified" | "kind";
 type Note = { text: string; error?: boolean } | null;
 
-export default function App() {
+export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [path, setPath] = useState(() => decodeURIComponent(location.hash.slice(1)));
   const [listing, setListing] = useState<Listing | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -180,6 +180,13 @@ export default function App() {
               <path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor" />
             </svg>
           </button>
+          {onSignOut && (
+            <button className="btn btn-icon" onClick={onSignOut} aria-label="Sign out" title="Sign out">
+              <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.4">
+                <path d="M6 2.5H3.5v11H6M10.5 5l3 3-3 3M13.5 8H6.5" />
+              </svg>
+            </button>
+          )}
         </div>
 
         <nav className="rail-nav">

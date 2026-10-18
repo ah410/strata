@@ -19,7 +19,7 @@ func testServer(t *testing.T) (http.Handler, string) {
 		t.Fatal(err)
 	}
 	root = r
-	return newHandler("Strata", []string{"strata.example.com"}), dir
+	return newHandler("Strata", []string{"strata.example.com"}, nil), dir
 }
 
 func do(h http.Handler, method, target, host, body string, hdr map[string]string) *httptest.ResponseRecorder {
