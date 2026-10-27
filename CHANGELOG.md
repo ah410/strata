@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.2 (2026-10-27)
+
+- The sign-in screen says how to reset a forgotten passphrase.
+
 ## 1.0.1 (2026-10-17)
 
 - The container health check no longer reports a running server as unhealthy
