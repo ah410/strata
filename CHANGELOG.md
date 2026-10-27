@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.2 (2026-10-27)
+
+- The sign-in screen says how to reset a forgotten passphrase.
+- Security updates: Go 1.27.3 (crypto/x509), excelize with fixes for four
+  workbook parsing advisories, and DOMPurify 3.4.17 for the Markdown preview.
+
 ## 1.0.1 (2026-10-17)
 
 - The container health check no longer reports a running server as unhealthy

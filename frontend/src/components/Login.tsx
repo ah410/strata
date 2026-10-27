@@ -50,6 +50,9 @@ export function Login({ onDone }: { onDone: () => void }) {
           aria-invalid={error ? true : undefined}
         />
         {error && <p className="login-error" role="alert">{error}</p>}
+        <p className="hint">
+          Forgot it? Delete <code>auth.hash</code> from the config storage and restart the app for a new setup code.
+        </p>
         <div className="dialog-actions">
           <button className="btn primary" type="submit" disabled={busy || !pass}>
             {busy ? "Checking…" : "Sign in"}
