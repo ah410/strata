@@ -64,6 +64,31 @@ export interface Job<R = unknown> {
   error?: string;
 }
 
+export interface SizeEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: number;
+  files?: number;
+  kind: Kind;
+}
+
+export interface SizeReport {
+  ready: boolean;
+  scanning: boolean;
+  seen: number;
+  scanned: string;
+  path: string;
+  size: number;
+  files: number;
+  hidden: number;
+  children: SizeEntry[];
+  largest: SizeEntry[];
+  kinds: Partial<Record<Kind, number>>;
+  trash: number;
+  versions: number;
+}
+
 export interface CellStyle {
   bold?: boolean;
   italic?: boolean;
@@ -170,6 +195,8 @@ export const api = {
 
   list: (path: string) => req<Listing>(`/api/list?path=${q(path)}`),
   usage: () => req<Usage>("/api/usage"),
+  sizes: (path: string, rescan = false) =>
+    req<SizeReport>(`/api/usage/tree?path=${q(path)}${rescan ? "&rescan=1" : ""}`),
   text: (path: string) => req<TextFile>(`/api/text?path=${q(path)}`),
 
   /** Saves text; an empty version creates a new file. Resolves to the new version. */

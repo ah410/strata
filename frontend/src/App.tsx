@@ -499,7 +499,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
           )}
         </nav>
 
-        <Capacity />
+        <Capacity onNavigate={navigate} onOpenTrash={() => { setView("trash"); setRailOpen(false); }} />
       </aside>
 
       <main className="main">

@@ -61,6 +61,7 @@ var (
 	appState *state.Store // nil without a config volume
 	// Two at a time: extracts and scans are disk-bound, more just thrash.
 	runner = jobs.New(2, time.Hour)
+	sizer  *fileops.Sizer
 )
 
 func main() {
@@ -103,6 +104,7 @@ func main() {
 		log.Fatalf("root %q unusable: %v", *dir, err)
 	}
 	root = r
+	sizer = fileops.NewSizer(root, 15*time.Minute)
 	log.Printf("strata %s serving %s on %s", version, root.Path(), *addr)
 
 	config, err := configDir(*cfgDir)
@@ -298,6 +300,7 @@ func newHandler(name string, hosts []string, gate *auth.Gate) http.Handler {
 	})
 	mux.HandleFunc("GET /api/list", handleList)
 	mux.HandleFunc("GET /api/usage", handleUsage)
+	mux.HandleFunc("GET /api/usage/tree", handleUsageTree)
 	mux.HandleFunc("GET /api/download", handleDownload)
 	mux.HandleFunc("GET /api/raw", handleRaw)
 	mux.HandleFunc("GET /api/text", handleText)
@@ -462,6 +465,18 @@ func handleUsage(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, u)
+}
+
+// handleUsageTree serves the storage dashboard from the last scan.
+func handleUsageTree(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	rep, err := sizer.Report(q.Get("path"), q.Get("rescan") == "1")
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, rep)
 }
 
 func handleDownload(w http.ResponseWriter, r *http.Request) {
