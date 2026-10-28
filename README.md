@@ -17,16 +17,24 @@ Created with Claude as a POC.
 ## Features
 
 - **Files:** browse, search names below any folder, upload files or whole
-  folders, and download a selection as a zip. Rename, move or copy with a
-  folder picker or by dragging. Large uploads resume after a dropped
-  connection.
-- **Previews:** images, PDF, video and audio play in the browser, and a grid
-  view shows image thumbnails.
+  folders (or paste a screenshot), and download a selection as a zip. Rename,
+  move or copy with a folder picker, by dragging, or with cut and paste.
+  Extract `.zip` and `.tar.gz` archives, or compress a selection to a zip on
+  the share. Large uploads resume after a dropped connection.
+- **Fast to drive:** a right-click menu, keyboard shortcuts for everything,
+  and Ctrl+K to jump to any file or run any action.
+- **Previews:** images, PDF, video and audio play in the browser. The grid
+  view shows image thumbnails, and can show the first page of PDFs, Word,
+  Excel, PowerPoint and text files too.
+- **Storage:** click the capacity meter to see which folders and files take
+  the most space, and find duplicate files.
 - **Editing:** a spreadsheet editor for `.xlsx` that recalculates on the
   server and keeps formulas intact, and a text editor with Markdown preview.
   Both refuse to overwrite a file that changed since you opened it.
 - **Safety net:** a trash with Undo, and version history for every file
   Strata replaces.
+- **Network drive:** optionally mount the share over WebDAV, with the same
+  trash and history.
 - **Favorites, recent files, and themes:** light, dark and well-known themes,
   chosen per file type.
 - **Hardened by default:** passphrase sign-in, HTTPS, a non-root
@@ -110,10 +118,37 @@ turns sign-in off. It logs a warning on every start.
 ## Using it
 
 Click a folder to open it and a file to preview or edit it. Drop files or
-folders anywhere on the listing to upload them. Tick checkboxes to act on
-several items at once; dragging rows onto a folder or a breadcrumb moves them
-(hold Ctrl or Alt to copy). The search box looks at names below the folder
-you're in. The button next to it switches between list and grid.
+folders anywhere on the listing to upload them, or paste files and
+screenshots. Click a row to select it, Shift-click to select a range,
+Ctrl-click (Cmd on a Mac) to add one, or drag a box across empty space.
+Dragging rows onto a folder or a breadcrumb moves them (hold Ctrl or Alt to
+copy). The search box looks at names below the folder you're in. The button
+next to it switches between list and grid.
+
+Right-click anything for its actions, or empty space for the folder's. Hold
+Shift while right-clicking to get the browser's own menu instead. Every
+action has a keyboard shortcut; press `?` or open **Settings** to see them
+all. Ctrl+K (Cmd+K) opens a palette that runs any action or jumps to any file
+by name.
+
+**Archives.** **Extract here** unpacks a `.zip`, `.tar`, `.tar.gz` or `.tgz`
+into a new folder named after it, so nothing existing is ever overwritten.
+**Compress to zip** saves a selection as a zip beside it. Both run in the
+background and show progress at the top.
+
+**Storage.** Click the capacity meter in the sidebar for a breakdown of what
+fills the share: folders and files by size (click a folder to drill in), the
+largest files, a split by file type, and how much the trash and version
+history hold. Adding up a large share takes a few minutes the first time;
+after that it reads from the last scan and refreshes every 15 minutes or on
+**Rescan**. The **Duplicates** tab compares file contents below a folder and
+moves the extra copies you tick to the trash.
+
+**Document previews.** In **Settings**, **Show document previews** makes grid
+cards show the first page of PDFs, Word, Excel, PowerPoint, Markdown, CSV
+and text files instead of an icon. It's off by default and saved per
+browser. PDFs render in the browser, and the code for that only downloads
+when the setting is on.
 
 **Workbooks.** Click any `.xlsx` to open the editor. Click a cell to select
 it, type to replace, and press Enter to commit. The formula bar shows the real
@@ -145,6 +180,19 @@ for that dataset. Partial uploads wait in the same folder and are cleaned up
 after a day. None of this replaces ZFS snapshots, which also cover changes
 made outside Strata.
 
+## Mounting it as a drive (WebDAV)
+
+Set `STRATA_WEBDAV=on` and the share is also served over WebDAV at `/dav/`.
+Connect to `https://<your-nas>:8443/dav/` from Finder (Go, Connect to
+Server), Windows (Map network drive), a Linux file manager (`davs://`), or a
+phone app. Any user name works; the password is your Strata passphrase.
+
+It follows the same rules as the web UI: deleting moves items to the trash,
+overwriting keeps the previous version, an upload that breaks off halfway
+leaves the old file alone, and the `.strata` folder doesn't appear. It's off
+by default because it's another way in; WebDAV needs HTTPS, and it shares
+the sign-in throttle with the web UI.
+
 ## Editing here and over SMB
 
 Strata won't overwrite someone else's save. Each save is checked against the
@@ -172,6 +220,7 @@ SMB plus real Excel is better for heavy work.
 | `STRATA_PASSWORD_FILE` | *(none)* | A hash from `strata hash-password`, used instead of first-run setup. |
 | `STRATA_AUTH` | `passphrase` | `none` disables sign-in. Only for networks you fully trust. |
 | `STRATA_TRASH_DAYS` | `30` | Days a deleted item stays restorable. |
+| `STRATA_WEBDAV` | `off` | `on` serves the share over WebDAV at `/dav/`. |
 | `TZ` | `Etc/UTC` | Zone for log timestamps. The UI shows times in the browser's zone. |
 
 ### Which user it runs as

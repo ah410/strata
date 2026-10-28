@@ -1,5 +1,51 @@
 # Changelog
 
+## 1.1.0 (2026-10-28)
+
+### Files
+- A right-click menu for files and for empty space in a folder. Shift+right-click
+  still opens the browser's own menu.
+- Extract `.zip`, `.tar`, `.tar.gz` and `.tgz` archives into a new folder
+  beside them, and compress a selection to a zip on the share. Both run in
+  the background with progress.
+- Cut, copy and paste between folders. Pasting into the same folder makes a
+  copy named `name (copy)`.
+- Shift-click selects a range, Ctrl/Cmd-click adds one item, and dragging
+  across empty space selects everything the box touches.
+- Paste files or a screenshot to upload them to the open folder.
+- An info panel with exact size, type, image dimensions and an on-demand
+  SHA-256.
+- The Strata name in the sidebar goes back to All files.
+
+### Getting around
+- Keyboard shortcuts for every action plus arrow-key navigation and
+  type-to-jump, listed in Settings (press `?`).
+- Ctrl+K (Cmd+K) opens a palette that runs actions and finds any file or
+  folder by name.
+
+### Storage
+- Clicking the capacity meter opens a dashboard of what fills the share:
+  folders and files by size, the largest files, a split by type, and the
+  space the trash and version history use.
+- Find duplicate files below a folder and move the extra copies to the trash.
+
+### Previews
+- An optional setting (off by default) shows the first page of PDFs, Word,
+  Excel, PowerPoint and text files in grid view.
+
+### WebDAV
+- With `STRATA_WEBDAV=on`, mount the share as a network drive at `/dav/`.
+  Deletes go to the trash and overwrites keep the previous version.
+
+### Fixes
+- Uploads no longer fail with "413 Request Entity Too Large" behind a reverse
+  proxy. Small files used to go up in one request per upload, which a folder
+  of thousands of photos turned into gigabytes; requests now stay around 8 MB
+  and shrink further if the proxy still refuses them.
+- A single upload can now be as large as the free space on the dataset,
+  rather than 8 GB, so 10 GB and 50 GB Takeout archives fit.
+- Error pages from a proxy show as a sentence instead of raw HTML.
+
 ## 1.0.2 (2026-10-27)
 
 - The sign-in screen says how to reset a forgotten passphrase.
