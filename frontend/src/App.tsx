@@ -13,6 +13,7 @@ import { FolderPicker } from "./components/FolderPicker";
 import { FileGrid } from "./components/FileGrid";
 import { TextEditor } from "./components/TextEditor";
 import { actionsFor, type ActionId, type Ctx } from "./lib/actions";
+import { ContextMenu } from "./components/ContextMenu";
 
 // Rows dragged inside Strata carry their paths under this type.
 const DRAG_TYPE = "application/x-strata-paths";
@@ -51,6 +52,8 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [searching, setSearching] = useState(false);
   const [picker, setPicker] = useState<null | { mode: "move" | "copy"; items: Entry[] }>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const [menu, setMenu] = useState<null | { x: number; y: number; sel: Entry[] }>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
 
   const loadSaved = useCallback(() => { api.state().then(setSaved, () => undefined); }, []);
   useEffect(loadSaved, [loadSaved]);
@@ -295,6 +298,14 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   // Drag source on every item, drop target on folders; shared by both layouts.
   const rowProps = (e: Entry) => ({
     draggable: true,
+    "data-path": e.path,
+    onContextMenu: (ev: React.MouseEvent) => {
+      ev.stopPropagation();
+      // Right-clicking outside the selection acts on that item alone.
+      const sel = picked.has(e.path) ? pickedEntries : [e];
+      if (!picked.has(e.path)) setPicked(new Set([e.path]));
+      openMenu(ev, sel);
+    },
     className: dropTarget === e.path ? " drop-on" : "",
     onDragStart: (ev: React.DragEvent) => {
       ev.dataTransfer.setData(DRAG_TYPE, JSON.stringify(dragPaths(e)));
@@ -303,6 +314,20 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     onDragEnd: () => setDropTarget(null),
     ...(e.isDir ? dropProps(e.path) : {}),
   });
+  // Shift+right-click keeps the browser's own menu as an escape hatch.
+  const openMenu = (ev: React.MouseEvent, sel: Entry[]) => {
+    if (ev.shiftKey) return;
+    ev.preventDefault();
+    let { clientX: x, clientY: y } = ev;
+    if (!x && !y) {
+      // Menu key or Shift+F10: open at the element instead of the corner.
+      const r = (ev.currentTarget as Element).getBoundingClientRect();
+      x = r.left + 24;
+      y = r.top + r.height / 2;
+    }
+    setMenu({ x, y, sel });
+  };
+
   const dropProps = (dest: string) => ({
     onDragOver: (ev: React.DragEvent) => {
       if (!ev.dataTransfer.types.includes(DRAG_TYPE)) return;
@@ -525,6 +550,10 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
 
         <div
           className={`listing${dragging ? " dropping" : ""}`}
+          onContextMenu={(e) => {
+            setPicked(new Set());
+            openMenu(e, []);
+          }}
           onDragOver={(e) => {
             if (!e.dataTransfer.types.includes("Files")) return;
             e.preventDefault();
@@ -672,6 +701,16 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       )}
       {open && open.kind !== "sheet" && open.kind !== "text" && open.kind !== "csv" && (
         <Preview entry={open} onClose={() => setOpen(null)} />
+      )}
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={actionsFor(ctx(menu.sel), "menu").map((a) => ({ id: a.id, label: a.label(ctx(menu.sel)), group: a.group, danger: a.danger }))}
+          onPick={(id) => perform(id as ActionId, menu.sel)}
+          onClose={closeMenu}
+        />
       )}
 
       {appearanceOpen && <AppearanceDialog onClose={() => setAppearanceOpen(false)} />}
