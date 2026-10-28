@@ -12,6 +12,7 @@ import { TrashView } from "./components/TrashView";
 import { FolderPicker } from "./components/FolderPicker";
 import { FileGrid } from "./components/FileGrid";
 import { TextEditor } from "./components/TextEditor";
+import { actionsFor, type ActionId, type Ctx } from "./lib/actions";
 
 // Rows dragged inside Strata carry their paths under this type.
 const DRAG_TYPE = "application/x-strata-paths";
@@ -48,7 +49,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [query, setQuery] = useState("");
   const [found, setFound] = useState<SearchResult | null>(null);
   const [searching, setSearching] = useState(false);
-  const [picker, setPicker] = useState<null | "move" | "copy">(null);
+  const [picker, setPicker] = useState<null | { mode: "move" | "copy"; items: Entry[] }>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
 
   const loadSaved = useCallback(() => { api.state().then(setSaved, () => undefined); }, []);
@@ -151,8 +152,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       return next;
     });
 
-  const starPicked = async () => {
-    const targets = [...picked];
+  const star = async (targets: string[]) => {
     const on = !targets.every((p) => favorites.has(p));
     try {
       for (const p of targets) await api.favorite(p, on);
@@ -223,8 +223,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
 
   // Deleting moves to the trash at once; the toast offers Undo. Only a
   // location without a trash asks before deleting permanently.
-  const removePicked = async () => {
-    const targets = [...picked];
+  const remove = async (targets: string[]) => {
     if (!targets.length) return;
     const ids: string[] = [];
     const noTrash: string[] = [];
@@ -287,8 +286,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     if (!copy) loadSaved();
   };
 
-  const downloadPicked = () => {
-    const sel = pickedEntries;
+  const download = (sel: Entry[]) => {
     if (sel.length === 1 && !sel[0].isDir) window.location.href = api.downloadUrl(sel[0].path);
     else if (sel.length) window.location.href = api.zipUrl(sel.map((e) => e.path));
   };
@@ -324,9 +322,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     },
   });
 
-  const renamePicked = () => {
-    const target = [...picked][0];
-    if (!target) return;
+  const rename = (target: string) => {
     const current = target.split("/").pop() ?? "";
     setPrompt({
       title: "Rename",
@@ -350,6 +346,29 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
         run(() => api.mkdir(joinPath(path, v.trim())), `Created ${v.trim()}`);
       },
     });
+
+  const ctx = (selection: Entry[]): Ctx => ({ selection, canStar: !!saved?.enabled, favorites, layout });
+
+  // What each registry action does, applied to an explicit selection.
+  const perform = (id: ActionId, sel: Entry[]) => {
+    const paths = sel.map((e) => e.path);
+    switch (id) {
+      case "open": return sel[0] && activate(sel[0]);
+      case "rename": return sel[0] && rename(sel[0].path);
+      case "history": return sel[0] && setHistoryPath(sel[0].path);
+      case "star": return star(paths);
+      case "move": case "copy": return setPicker({ mode: id, items: sel });
+      case "download": return download(sel);
+      case "delete": return remove(paths);
+      case "layout": return setLayout(layout === "list" ? "grid" : "list");
+      case "newFolder": return newFolder();
+      case "newFile": return newTextFile();
+      case "uploadFolder": return folderInput.current?.click();
+      case "upload": return fileInput.current?.click();
+      case "selectAll": return setPicked(new Set(rows.map((e) => e.path)));
+      case "refresh": return refresh();
+    }
+  };
 
   return (
     <div className="shell">
@@ -481,45 +500,22 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
           </div>
 
           <div className="actions">
-            {picked.size === 1 && (
-              <button className="btn" onClick={renamePicked}>
-                Rename
-              </button>
-            )}
-            {picked.size === 1 && pickedEntries[0] && !pickedEntries[0].isDir && (
-              <button className="btn" onClick={() => setHistoryPath([...picked][0])}>
-                History
-              </button>
-            )}
-            {picked.size > 0 && (
-              <>
-                {saved?.enabled && (
-                  <button className="btn" onClick={starPicked}>
-                    {[...picked].every((p) => favorites.has(p)) ? "Unstar" : "Star"}
-                  </button>
-                )}
-                <button className="btn" onClick={() => setPicker("move")}>Move</button>
-                <button className="btn" onClick={() => setPicker("copy")}>Copy</button>
-                <button className="btn" onClick={downloadPicked}>Download</button>
-                <button className="btn danger" onClick={removePicked}>Delete</button>
-              </>
-            )}
-            {picked.size === 0 && (
-              <>
-                <button
-                  className="btn btn-icon"
-                  onClick={() => setLayout(layout === "list" ? "grid" : "list")}
-                  aria-label={layout === "list" ? "Show as grid" : "Show as list"}
-                  title={layout === "list" ? "Show as grid" : "Show as list"}
-                >
+            {actionsFor(ctx(pickedEntries), "toolbar").map((a) => {
+              const c = ctx(pickedEntries);
+              return a.id === "layout" ? (
+                <button key={a.id} className="btn btn-icon" onClick={() => perform(a.id, [])} aria-label={a.label(c)} title={a.label(c)}>
                   {layout === "list" ? "▦" : "☰"}
                 </button>
-                <button className="btn" onClick={newFolder}>New folder</button>
-                <button className="btn" onClick={newTextFile}>New file</button>
-                <button className="btn" onClick={() => folderInput.current?.click()}>Upload folder</button>
-                <button className="btn primary" onClick={() => fileInput.current?.click()}>Upload</button>
-              </>
-            )}
+              ) : (
+                <button
+                  key={a.id}
+                  className={`btn${a.primary ? " primary" : ""}${a.danger ? " danger" : ""}`}
+                  onClick={() => perform(a.id, pickedEntries)}
+                >
+                  {a.label(c)}
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -657,11 +653,11 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
 
       {picker && (
         <FolderPicker
-          title={`${picker === "move" ? "Move" : "Copy"} ${plural(picked.size, "item")} to…`}
-          action={picker === "move" ? "Move" : "Copy"}
+          title={`${picker.mode === "move" ? "Move" : "Copy"} ${plural(picker.items.length, "item")} to…`}
+          action={picker.mode === "move" ? "Move" : "Copy"}
           start={path}
-          blocked={pickedEntries.filter((e) => e.isDir).map((e) => e.path)}
-          onPick={(dest) => transfer([...picked], dest, picker === "copy")}
+          blocked={picker.items.filter((e) => e.isDir).map((e) => e.path)}
+          onPick={(dest) => transfer(picker.items.map((e) => e.path), dest, picker.mode === "copy")}
           onClose={() => setPicker(null)}
         />
       )}
