@@ -374,12 +374,14 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     <div className="shell">
       <aside className={`rail${railOpen ? " open" : ""}`}>
         <div className="rail-head">
-          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-            <rect x="1.5" y="2.5" width="13" height="3.4" rx="1" fill="var(--k-folder)" opacity=".85" />
-            <rect x="1.5" y="6.3" width="13" height="3.4" rx="1" fill="var(--k-sheet)" opacity=".7" />
-            <rect x="1.5" y="10.1" width="13" height="3.4" rx="1" fill="var(--k-video)" opacity=".55" />
-          </svg>
-          <span className="wordmark">Strata</span>
+          <button className="home" onClick={() => navigate("")} aria-label="Strata: all files" title="All files">
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="1.5" y="2.5" width="13" height="3.4" rx="1" fill="var(--k-folder)" opacity=".85" />
+              <rect x="1.5" y="6.3" width="13" height="3.4" rx="1" fill="var(--k-sheet)" opacity=".7" />
+              <rect x="1.5" y="10.1" width="13" height="3.4" rx="1" fill="var(--k-video)" opacity=".55" />
+            </svg>
+            <span className="wordmark">Strata</span>
+          </button>
           <button
             className="btn btn-icon"
             onClick={() => setAppearanceOpen(true)}

@@ -136,6 +136,20 @@ button { font: inherit; color: inherit; }
   padding: 16px 16px 14px;
 }
 
+.home {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.home:hover .wordmark { color: var(--select); }
+.home:focus-visible { outline: 1px solid var(--select); outline-offset: 3px; border-radius: 3px; }
+
 .wordmark {
   font-size: 14px;
   font-weight: 600;
