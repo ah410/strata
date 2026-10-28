@@ -14,6 +14,7 @@ import { FileGrid } from "./components/FileGrid";
 import { TextEditor } from "./components/TextEditor";
 import { actionsFor, type ActionId, type Ctx } from "./lib/actions";
 import { ContextMenu } from "./components/ContextMenu";
+import { follow } from "./lib/jobs";
 
 // Rows dragged inside Strata carry their paths under this type.
 const DRAG_TYPE = "application/x-strata-paths";
@@ -40,7 +41,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [open, setOpen] = useState<Entry | null>(null);
   const [prompt, setPrompt] = useState<null | { title: string; label: string; value: string; onOk: (v: string) => void }>(null);
   const [note, setNote] = useState<Note>(null);
-  const [uploadPct, setUploadPct] = useState<number | null>(null);
+  const [progress, setProgress] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
@@ -212,15 +213,15 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
 
   const upload = async (list: UploadItem[]) => {
     if (!list.length) return;
-    setUploadPct(0);
+    setProgress(0);
     try {
-      await uploadAll(path, list, setUploadPct);
+      await uploadAll(path, list, setProgress);
       toast(`Uploaded ${list.length} file${list.length === 1 ? "" : "s"}`);
       refresh();
     } catch (e) {
       toast((e as Error).message, true);
     } finally {
-      setUploadPct(null);
+      setProgress(null);
     }
   };
 
@@ -287,6 +288,25 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     if (ok) toast(`${copy ? "Copied" : "Moved"} ${plural(ok, "item")} to /${dest}`);
     refresh();
     if (!copy) loadSaved();
+  };
+
+  // Runs a server job with the top progress bar, then refreshes.
+  const runJob = async <R,>(start: Promise<string>, done: (r: R) => void) => {
+    setProgress(0);
+    try {
+      done(await follow<R>(await start, (p) => setProgress(p ?? 0)));
+      refresh();
+    } catch (e) {
+      toast((e as Error).message, true);
+    } finally {
+      setProgress(null);
+    }
+  };
+
+  const extract = (e: Entry) => {
+    toast(`Extracting ${e.name}…`);
+    runJob<string>(api.extract(e.path), (dest) =>
+      toast(`Extracted to ${dest.split("/").pop()}`, false, { label: "Open", run: () => navigate(dest) }));
   };
 
   const download = (sel: Entry[]) => {
@@ -379,6 +399,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     const paths = sel.map((e) => e.path);
     switch (id) {
       case "open": return sel[0] && activate(sel[0]);
+      case "extract": return sel[0] && extract(sel[0]);
       case "rename": return sel[0] && rename(sel[0].path);
       case "history": return sel[0] && setHistoryPath(sel[0].path);
       case "star": return star(paths);
@@ -546,7 +567,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
           </div>
         </div>
 
-        {uploadPct !== null && <div className="progress" style={{ width: `${uploadPct}%` }} />}
+        {progress !== null && <div className="progress" style={{ width: `${progress}%` }} />}
 
         <div
           className={`listing${dragging ? " dropping" : ""}`}

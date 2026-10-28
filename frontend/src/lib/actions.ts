@@ -5,7 +5,7 @@ import type { Entry } from "./api";
  * from this list; App supplies what each id does.
  */
 export type ActionId =
-  | "open" | "rename" | "history" | "star" | "move" | "copy" | "download" | "delete"
+  | "open" | "extract" | "rename" | "history" | "star" | "move" | "copy" | "download" | "delete"
   | "newFolder" | "newFile" | "uploadFolder" | "upload" | "layout" | "selectAll" | "refresh";
 
 export interface Ctx {
@@ -32,10 +32,13 @@ export interface Action {
 
 const one = (c: Ctx) => c.selection.length === 1;
 const oneFile = (c: Ctx) => one(c) && !c.selection[0].isDir;
+/** Archive formats the server can unpack. */
+export const EXTRACTABLE = /\.(zip|tar|tar\.gz|tgz)$/i;
 const allStarred = (c: Ctx) => c.selection.length > 0 && c.selection.every((e) => c.favorites.has(e.path));
 
 export const ACTIONS: Action[] = [
   { id: "open", label: () => "Open", on: "item", group: 0, when: one },
+  { id: "extract", label: () => "Extract here", on: "item", group: 0, toolbar: true, when: (c) => oneFile(c) && EXTRACTABLE.test(c.selection[0].name) },
   { id: "rename", label: () => "Rename", on: "item", group: 1, toolbar: true, when: one },
   { id: "history", label: () => "History", on: "item", group: 1, toolbar: true, when: oneFile },
   { id: "star", label: (c) => (allStarred(c) ? "Unstar" : "Star"), on: "item", group: 1, toolbar: true, when: (c) => c.canStar },

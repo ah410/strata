@@ -32,6 +32,13 @@ describe("actionsFor", () => {
     expect(star(ctx([file("a")], { favorites: new Set(["a"]) }))).toBe("Unstar");
   });
 
+  it("offers extract for supported archives only", () => {
+    expect(ids(ctx([file("a.zip")]))).toContain("extract");
+    expect(ids(ctx([file("b.TAR.GZ")]))).toContain("extract");
+    expect(ids(ctx([file("c.7z")]))).not.toContain("extract");
+    expect(ids(ctx([file("a.zip"), file("b.zip")]))).not.toContain("extract");
+  });
+
   it("keeps menu-only actions out of the toolbar", () => {
     expect(ids(ctx([file("a")]), "toolbar")).not.toContain("open");
     expect(ids(ctx([]), "toolbar")).not.toContain("selectAll");

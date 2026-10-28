@@ -31,6 +31,7 @@ import (
 
 	"strata/internal/auth"
 	"strata/internal/fileops"
+	"strata/internal/jobs"
 	"strata/internal/safepath"
 	"strata/internal/sheet"
 	"strata/internal/state"
@@ -58,6 +59,8 @@ var (
 	root     *safepath.Root
 	thumbs   *thumb.Cache
 	appState *state.Store // nil without a config volume
+	// Two at a time: extracts and scans are disk-bound, more just thrash.
+	runner = jobs.New(2, time.Hour)
 )
 
 func main() {
@@ -313,6 +316,9 @@ func newHandler(name string, hosts []string, gate *auth.Gate) http.Handler {
 	mux.HandleFunc("DELETE /api/uploads/{id}", handleUploadAbort)
 	mux.HandleFunc("GET /api/search", handleSearch)
 	mux.HandleFunc("GET /api/zip", handleZip)
+	mux.HandleFunc("POST /api/extract", handleExtract)
+	mux.HandleFunc("GET /api/jobs/{id}", handleJob)
+	mux.HandleFunc("DELETE /api/jobs/{id}", handleJobCancel)
 	mux.HandleFunc("POST /api/mkdir", handleMkdir)
 	mux.HandleFunc("POST /api/move", handleMove)
 	mux.HandleFunc("POST /api/copy", handleCopy)
@@ -836,6 +842,53 @@ func handleZip(w http.ResponseWriter, r *http.Request) {
 		log.Printf("zip: %v", err)
 		panic(http.ErrAbortHandler)
 	}
+}
+
+// handleExtract unpacks an archive into a new folder beside it, as a job.
+func handleExtract(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	rel, err := fileops.ExtractCheck(root, req.Path)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	id := runner.Start("extract", func(ctx context.Context, report jobs.Progress) (any, error) {
+		return fileops.Extract(ctx, root, rel, extractLimits(), report)
+	})
+	writeJSON(w, map[string]any{"job": id})
+}
+
+// extractLimits caps an archive at the free space, less a margin so a bomb
+// can't fill the pool to the last byte.
+func extractLimits() fileops.ExtractLimits {
+	lim := fileops.ExtractLimits{MaxFiles: 500_000, MaxBytes: 1 << 62}
+	if u, err := fileops.Usage(root); err == nil {
+		lim.MaxBytes = max(int64(u.Free)-int64(u.Total/100), 0)
+	}
+	return lim
+}
+
+func handleJob(w http.ResponseWriter, r *http.Request) {
+	j, ok := runner.Get(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, j)
+}
+
+func handleJobCancel(w http.ResponseWriter, r *http.Request) {
+	if !runner.Cancel(r.PathValue("id")) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func handleMkdir(w http.ResponseWriter, r *http.Request) {

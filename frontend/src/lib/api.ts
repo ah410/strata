@@ -54,6 +54,16 @@ export interface Usage {
   used: number;
 }
 
+export interface Job<R = unknown> {
+  id: string;
+  kind: string;
+  state: "queued" | "running" | "done" | "failed" | "canceled";
+  done: number;
+  total: number;
+  result?: R;
+  error?: string;
+}
+
 export interface CellStyle {
   bold?: boolean;
   italic?: boolean;
@@ -260,6 +270,17 @@ export const api = {
     req<SearchResult>(`/api/search?path=${q(path)}&q=${q(query)}`, { signal }),
 
   zipUrl: (paths: string[]) => `/api/zip?${paths.map((p) => `path=${q(p)}`).join("&")}`,
+
+  /** Starts unpacking an archive; resolves to the job id. */
+  extract: (path: string) =>
+    req<{ job: string }>("/api/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }).then((r) => r.job),
+
+  job: <R>(id: string) => req<Job<R>>(`/api/jobs/${q(id)}`),
+  cancelJob: (id: string) => fetch(`/api/jobs/${q(id)}`, { method: "DELETE", headers: GUARD }),
 
   downloadUrl: (path: string) => `/api/download?path=${q(path)}`,
   rawUrl: (path: string) => `/api/raw?path=${q(path)}`,

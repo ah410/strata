@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"mime/multipart"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func multipartUpload(t *testing.T, parts [][2]string) (string, string) {
@@ -99,4 +101,55 @@ func TestChunkedUploadOverHTTP(t *testing.T) {
 type httptestRec struct {
 	code int
 	off  string
+}
+
+func waitJob(t *testing.T, h http.Handler, id string) map[string]any {
+	t.Helper()
+	for range 400 {
+		rec := do(h, "GET", "/api/jobs/"+id, "strata.example.com", "", nil)
+		var j map[string]any
+		json.Unmarshal(rec.Body.Bytes(), &j)
+		if s := j["state"]; s != "queued" && s != "running" {
+			return j
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("job never finished")
+	return nil
+}
+
+func TestExtractOverHTTP(t *testing.T) {
+	h, dir := testServer(t)
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	f, _ := zw.Create("inner/a.txt")
+	f.Write([]byte("hello"))
+	zw.Close()
+	os.MkdirAll(filepath.Join(dir, "dl"), 0o755)
+	os.WriteFile(filepath.Join(dir, "dl/takeout.zip"), buf.Bytes(), 0o644)
+
+	hdr := map[string]string{"Content-Type": "application/json", "X-Strata": "1"}
+	rec := do(h, "POST", "/api/extract", "strata.example.com", `{"path":"dl/takeout.zip"}`, hdr)
+	if rec.Code != 200 {
+		t.Fatalf("extract: %d %s", rec.Code, rec.Body)
+	}
+	var start struct{ Job string }
+	json.Unmarshal(rec.Body.Bytes(), &start)
+	j := waitJob(t, h, start.Job)
+	if j["state"] != "done" || j["result"] != "dl/takeout" {
+		t.Fatalf("job = %v", j)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "dl/takeout/inner/a.txt")); string(b) != "hello" {
+		t.Fatalf("extracted = %q", b)
+	}
+
+	// Bad requests fail up front, not as a job.
+	for _, body := range []string{`{"path":"dl/nope.zip"}`, `{"path":"dl/takeout"}`, `{"path":"../x.zip"}`} {
+		if rec := do(h, "POST", "/api/extract", "strata.example.com", body, hdr); rec.Code == 200 {
+			t.Errorf("%s accepted", body)
+		}
+	}
+	if rec := do(h, "GET", "/api/jobs/nope", "strata.example.com", "", nil); rec.Code != 404 {
+		t.Errorf("unknown job: %d", rec.Code)
+	}
 }
