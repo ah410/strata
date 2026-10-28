@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useState } from "react";
 import {
   SCOPES, THEMES, THEME_IDS, setAppearance, setScopeTheme, useAppearance,
   type Scope, type ThemeId,
@@ -10,14 +10,16 @@ import { display, NAV_KEYS } from "../lib/keys";
 const LIGHT = THEME_IDS.filter((id) => !THEMES[id].dark);
 const DARK = THEME_IDS.filter((id) => THEMES[id].dark);
 
-/** Settings: grid previews, themes and the keyboard shortcut reference. */
-export function AppearanceDialog({ onClose, start = "top" }: { onClose: () => void; start?: "top" | "shortcuts" }) {
-  const { appearance } = useAppearance();
-  const prefs = usePrefs();
-  const keysRef = useRef<HTMLHeadingElement>(null);
-  useEffect(() => {
-    if (start === "shortcuts") keysRef.current?.scrollIntoView({ block: "start" });
-  }, [start]);
+export type SettingsSection = "appearance" | "shortcuts";
+
+const SECTIONS: { id: SettingsSection; label: string }[] = [
+  { id: "appearance", label: "Appearance" },
+  { id: "shortcuts", label: "Keyboard shortcuts" },
+];
+
+/** Settings, one section at a time, picked from the list on the left. */
+export function AppearanceDialog({ onClose, start = "appearance" }: { onClose: () => void; start?: SettingsSection }) {
+  const [section, setSection] = useState<SettingsSection>(start);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -27,82 +29,96 @@ export function AppearanceDialog({ onClose, start = "top" }: { onClose: () => vo
 
   return (
     <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="dialog wide" role="dialog" aria-modal="true" aria-label="Settings">
-        <h3>Settings</h3>
-
-        <h4>Grid view</h4>
-        <label className="field-row toggle">
-          <span>
-            Show document previews
-            <small>PDFs, Word, Excel, PowerPoint and text files show their first page instead of an icon.</small>
-          </span>
-          <input type="checkbox" role="switch" checked={prefs.previews} onChange={(e) => setPref("previews", e.target.checked)} />
-        </label>
-
-        <h4>Theme</h4>
-        <div className="theme-grid">
-          <button
-            className="theme-card"
-            aria-pressed={appearance.app === "system"}
-            onClick={() => setAppearance({ app: "system" })}
-          >
-            <span style={{ display: "flex", gap: 3 }}>
-              <span style={{ flex: 1 }}><Swatch id={appearance.systemLight} /></span>
-              <span style={{ flex: 1 }}><Swatch id={appearance.systemDark} /></span>
-            </span>
-            Follow system
-          </button>
-          {THEME_IDS.map((id) => (
-            <button
-              key={id}
-              className="theme-card"
-              aria-pressed={appearance.app === id}
-              onClick={() => setAppearance({ app: id })}
-            >
-              <Swatch id={id} />
-              {THEMES[id].label}
+      <div className="dialog settings" role="dialog" aria-modal="true" aria-label="Settings">
+        <nav className="settings-nav" aria-label="Settings sections">
+          <h3>Settings</h3>
+          {SECTIONS.map((s) => (
+            <button key={s.id} className="settings-tab" aria-current={section === s.id} onClick={() => setSection(s.id)}>
+              {s.label}
             </button>
           ))}
-        </div>
-
-        {appearance.app === "system" && (
-          <>
-            <div className="field-row" style={{ marginTop: 8 }}>
-              <span>When the system is light</span>
-              <ThemeSelect value={appearance.systemLight} ids={LIGHT}
-                onChange={(id) => id && setAppearance({ systemLight: id })} />
-            </div>
-            <div className="field-row">
-              <span>When the system is dark</span>
-              <ThemeSelect value={appearance.systemDark} ids={DARK}
-                onChange={(id) => id && setAppearance({ systemDark: id })} />
-            </div>
-          </>
-        )}
-
-        <h4>By file type</h4>
-        {(Object.keys(SCOPES) as Scope[]).map((scope) => (
-          <div className="field-row" key={scope}>
-            <span>{SCOPES[scope]}</span>
-            <ThemeSelect
-              value={appearance.scopes[scope] ?? null}
-              onChange={(id) => setScopeTheme(scope, id)}
-              allowInherit
-            />
+        </nav>
+        <div className="settings-body">
+          <div className="settings-head">
+            <h3>{SECTIONS.find((s) => s.id === section)!.label}</h3>
+            <button className="btn btn-icon" onClick={onClose} aria-label="Close settings">✕</button>
           </div>
-        ))}
-        <p className="hint">
-          Settings are saved in this browser. PDFs use the browser's own viewer, so only the frame around them changes.
-        </p>
-
-        <h4 ref={keysRef}>Keyboard shortcuts</h4>
-        <ShortcutList />
-
-        <div className="dialog-actions" style={{ marginTop: 14 }}>
-          <button className="btn primary" onClick={onClose}>Done</button>
+          {section === "appearance" ? <AppearanceSettings /> : <ShortcutList />}
+          <p className="hint">Settings are saved in this browser.</p>
         </div>
       </div>
     </div>
+  );
+}
+
+function AppearanceSettings() {
+  const { appearance } = useAppearance();
+  const prefs = usePrefs();
+  return (
+    <>
+      <h4>Theme</h4>
+      <div className="theme-grid">
+        <button
+          className="theme-card"
+          aria-pressed={appearance.app === "system"}
+          onClick={() => setAppearance({ app: "system" })}
+        >
+          <span style={{ display: "flex", gap: 3 }}>
+            <span style={{ flex: 1 }}><Swatch id={appearance.systemLight} /></span>
+            <span style={{ flex: 1 }}><Swatch id={appearance.systemDark} /></span>
+          </span>
+          Follow system
+        </button>
+        {THEME_IDS.map((id) => (
+          <button
+            key={id}
+            className="theme-card"
+            aria-pressed={appearance.app === id}
+            onClick={() => setAppearance({ app: id })}
+          >
+            <Swatch id={id} />
+            {THEMES[id].label}
+          </button>
+        ))}
+      </div>
+
+      {appearance.app === "system" && (
+        <>
+          <div className="field-row" style={{ marginTop: 8 }}>
+            <span>When the system is light</span>
+            <ThemeSelect value={appearance.systemLight} ids={LIGHT}
+              onChange={(id) => id && setAppearance({ systemLight: id })} />
+          </div>
+          <div className="field-row">
+            <span>When the system is dark</span>
+            <ThemeSelect value={appearance.systemDark} ids={DARK}
+              onChange={(id) => id && setAppearance({ systemDark: id })} />
+          </div>
+        </>
+      )}
+
+      <h4>By file type</h4>
+      {(Object.keys(SCOPES) as Scope[]).map((scope) => (
+        <div className="field-row" key={scope}>
+          <span>{SCOPES[scope]}</span>
+          <ThemeSelect
+            value={appearance.scopes[scope] ?? null}
+            onChange={(id) => setScopeTheme(scope, id)}
+            allowInherit
+          />
+        </div>
+      ))}
+      <p className="hint">PDFs use the browser's own viewer, so only the frame around them changes.</p>
+
+      <h4>Previews</h4>
+      <label className="field-row toggle">
+        <span>
+          Show document previews in grid view
+          <small>PDFs, Word, Excel, PowerPoint and text files show their first page instead of an icon.</small>
+        </span>
+        <input type="checkbox" role="switch" checked={prefs.previews} onChange={(e) => setPref("previews", e.target.checked)} />
+      </label>
+    </>
   );
 }
 

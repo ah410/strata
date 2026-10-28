@@ -6,7 +6,7 @@ import { Capacity } from "./components/Capacity";
 import { Glyph } from "./components/Glyph";
 import { Preview, canPreview } from "./components/Preview";
 import { SheetEditor } from "./components/SheetEditor";
-import { AppearanceDialog } from "./components/Appearance";
+import { AppearanceDialog, type SettingsSection } from "./components/Appearance";
 import { History } from "./components/History";
 import { TrashView } from "./components/TrashView";
 import { FolderPicker } from "./components/FolderPicker";
@@ -48,7 +48,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [progress, setProgress] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
-  const [appearanceOpen, setAppearanceOpen] = useState<false | "top" | "shortcuts">(false);
+  const [appearanceOpen, setAppearanceOpen] = useState<false | SettingsSection>(false);
   const [historyPath, setHistoryPath] = useState<string | null>(null);
   const closeHistory = useCallback(() => setHistoryPath(null), []);
   const [infoPath, setInfoPath] = useState<string | null>(null);
@@ -557,7 +557,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       ...(path ? [{ id: "go:up", label: "Parent folder", section: "Go to", run: () => navigate(parentOf(path)) }] : []),
       { id: "go:recent", label: "Recent files", section: "Go to", run: () => setView("recent") },
       { id: "go:trash", label: "Trash", section: "Go to", run: () => setView("trash") },
-      { id: "go:settings", label: "Settings", section: "Go to", run: () => setAppearanceOpen("top") },
+      { id: "go:settings", label: "Settings", section: "Go to", run: () => setAppearanceOpen("appearance") },
       { id: "go:keys", label: "Keyboard shortcuts", hint: "?", section: "Go to", run: () => setAppearanceOpen("shortcuts") },
       ...(saved?.favorites ?? []).map((f) => ({ id: "fav:" + f.path, label: f.name, hint: "★", section: "Favorites", run: () => activate(f) })),
     ];
@@ -673,7 +673,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
           </button>
           <button
             className="btn btn-icon"
-            onClick={() => setAppearanceOpen("top")}
+            onClick={() => setAppearanceOpen("appearance")}
             aria-label="Settings"
             title="Settings"
           >
