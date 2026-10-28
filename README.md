@@ -35,8 +35,14 @@ where they are on the dataset, and the little Strata remembers (the passphrase h
 certificate, favorites, a thumbnail cache) lives in one config directory. It makes no network
 connections of its own and has no analytics.
 
-I wanted Nextcloud's convenience for my own NAS without running Nextcloud, so I built Strata with
-Claude in Claude Code, directing the work and testing it against my own TrueNAS server.
+I built Strata with Claude in Claude Code, directing the work and testing it against my own
+TrueNAS server.
+
+I've been using Strata almost every day myself and have been loving it. Just recently, I did a
+Google Takeout download and uploaded my files from Google Drive to Strata, slowly making the shift
+to rely less on third-party cloud providers. There's the saying that you should love using your
+own product if you want others to use it as well, so that's the approach I took while scoping
+this out. Hope y'all enjoy using it so far!
 
 ## Install
 
@@ -48,7 +54,7 @@ and give the app's user (568 `apps` by default) a **Modify** ACL entry on it. Wh
 open the app's logs, copy the setup code, and open the Web UI to choose a passphrase. Until then,
 use the compose file below.
 
-### Docker Compose (or a Dockge stack)
+### Docker Compose
 
 Copy [docker-compose.yml](docker-compose.yml), set the dataset path and a `user:` that can write
 to it, and run `docker compose up -d`. Then:
@@ -59,6 +65,35 @@ docker logs strata 2>&1 | grep "SETUP CODE"
 
 Open `https://<your-nas>:8443`, accept the self-signed certificate (the logs print its
 fingerprint so you can check it), enter the code, and choose a passphrase.
+
+### Dockge
+
+This is how I run it on my own TrueNAS box.
+
+1. In TrueNAS, create a user for Strata with no login access (note its uid and gid), and give it
+   a **Modify** entry with **Inherit** on the dataset's ACL.
+2. In Dockge, click **+ Compose** and name the stack `strata`.
+3. Paste [docker-compose.yml](docker-compose.yml) into the compose editor. Dockge also shows an
+   `.env` box below it; leave that empty, the YAML goes in the compose editor only. Set `user:` to
+   the uid:gid from step 1, the left side of the `/data` volume to your dataset, and the config
+   volume to `./config` so it lives in the stack's folder.
+4. Create that config folder for the user before the first deploy, from the TrueNAS shell. With
+   the TrueNAS Dockge app, stacks usually live under `/mnt/.ix-apps/app_mounts/dockge/stacks`:
+
+   ```sh
+   cd /mnt/.ix-apps/app_mounts/dockge/stacks/strata
+   sudo mkdir -p config && sudo chown <uid>:<gid> config
+   ```
+
+5. Click **Deploy**. The setup code is in the stack's log panel in Dockge; open the Web UI, enter
+   it, and choose a passphrase.
+
+To upgrade later, change the image tag in the compose file and click **Update**.
+
+> **Behind Nginx Proxy Manager?** Raise NPM's request size limit or large uploads slow down.
+> Strata still works with NPM's defaults, but see
+> [Behind Nginx Proxy Manager](#behind-nginx-proxy-manager) for the four lines to add and what
+> each one does.
 
 Images are published as `ghcr.io/ah410/strata` for amd64 and arm64, signed with cosign. Pin a
 version (`:1.1.0`) or a digest in production.
