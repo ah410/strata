@@ -15,6 +15,7 @@ import { TextEditor } from "./components/TextEditor";
 import { actionsFor, type ActionId, type Ctx } from "./lib/actions";
 import { ContextMenu } from "./components/ContextMenu";
 import { follow } from "./lib/jobs";
+import { box, overlaps, range, type Box } from "./lib/selection";
 
 // Rows dragged inside Strata carry their paths under this type.
 const DRAG_TYPE = "application/x-strata-paths";
@@ -55,6 +56,8 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [menu, setMenu] = useState<null | { x: number; y: number; sel: Entry[] }>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
+  const anchor = useRef<string | null>(null);
+  const [marquee, setMarquee] = useState<Box | null>(null);
 
   const loadSaved = useCallback(() => { api.state().then(setSaved, () => undefined); }, []);
   useEffect(loadSaved, [loadSaved]);
@@ -149,12 +152,68 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     window.location.href = api.downloadUrl(e.path);
   };
 
-  const togglePick = (p: string, on: boolean) =>
+  const togglePick = (p: string, on: boolean) => {
+    anchor.current = p;
     setPicked((s) => {
       const next = new Set(s);
       on ? next.add(p) : next.delete(p);
       return next;
     });
+  };
+
+  type Mods = { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean };
+  const hasMods = (ev: Mods) => ev.shiftKey || ev.ctrlKey || ev.metaKey;
+  // Click selects one, Ctrl/Cmd toggles, Shift extends from the last click.
+  const pick = (p: string, ev: Mods, add = ev.ctrlKey || ev.metaKey) => {
+    if (ev.shiftKey) {
+      const span = range(rows.map((e) => e.path), anchor.current, p);
+      setPicked((s) => new Set([...(add ? s : []), ...span]));
+      return;
+    }
+    if (add) return togglePick(p, !picked.has(p));
+    anchor.current = p;
+    setPicked(new Set([p]));
+  };
+  // Names and thumbnails open on a plain click and select with a modifier.
+  const openOrPick = (e: Entry, ev: React.MouseEvent) => {
+    ev.stopPropagation();
+    if (hasMods(ev)) pick(e.path, ev);
+    else activate(e);
+  };
+  // A Shift-click on a checkbox adds the whole range.
+  const checkClick = (e: Entry, ev: React.MouseEvent) => {
+    if (!ev.shiftKey) return;
+    ev.preventDefault();
+    pick(e.path, ev, true);
+  };
+
+  // Dragging on empty space draws a box that selects what it touches.
+  const startMarquee = (ev: React.MouseEvent) => {
+    if (ev.button !== 0 || (ev.target as Element).closest("[data-path], button, input, a, thead, .search-note")) return;
+    const x0 = ev.clientX, y0 = ev.clientY;
+    const base = hasMods(ev) ? new Set(picked) : new Set<string>();
+    const items = [...document.querySelectorAll<HTMLElement>(".listing [data-path]")].map((el) => ({
+      path: el.dataset.path!,
+      rect: el.getBoundingClientRect(),
+    }));
+    let moved = false;
+    const move = (m: MouseEvent) => {
+      if (!moved && Math.abs(m.clientX - x0) + Math.abs(m.clientY - y0) < 5) return;
+      moved = true;
+      const b = box(x0, y0, m.clientX, m.clientY);
+      setMarquee(b);
+      setPicked(new Set([...base, ...items.filter((i) => overlaps(b, i.rect)).map((i) => i.path)]));
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setMarquee(null);
+      if (!moved && !hasMods(ev)) setPicked(new Set());
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    ev.preventDefault();
+  };
 
   const star = async (targets: string[]) => {
     const on = !targets.every((p) => favorites.has(p));
@@ -319,6 +378,9 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const rowProps = (e: Entry) => ({
     draggable: true,
     "data-path": e.path,
+    onClick: (ev: React.MouseEvent) => {
+      if (!(ev.target as Element).closest("button, input, a")) pick(e.path, ev);
+    },
     onContextMenu: (ev: React.MouseEvent) => {
       ev.stopPropagation();
       // Right-clicking outside the selection acts on that item alone.
@@ -571,6 +633,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
 
         <div
           className={`listing${dragging ? " dropping" : ""}`}
+          onMouseDown={startMarquee}
           onContextMenu={(e) => {
             setPicked(new Set());
             openMenu(e, []);
@@ -619,7 +682,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
           )}
 
           {!error && rows.length > 0 && layout === "grid" && (
-            <FileGrid rows={rows} picked={picked} togglePick={togglePick} activate={activate} favorites={favorites} rowProps={rowProps} />
+            <FileGrid rows={rows} picked={picked} togglePick={togglePick} openOrPick={openOrPick} checkClick={checkClick} favorites={favorites} rowProps={rowProps} />
           )}
 
           {!error && rows.length > 0 && layout === "list" && (
@@ -650,6 +713,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
                         className="pick"
                         checked={picked.has(e.path)}
                         aria-label={`Select ${e.name}`}
+                        onClick={(ev) => checkClick(e, ev)}
                         onChange={(ev) => togglePick(e.path, ev.target.checked)}
                       />
                     </td>
@@ -658,7 +722,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
                         <span className="glyph">
                           <Glyph kind={e.kind} />
                         </span>
-                        <button onClick={() => activate(e)}>{e.name}</button>
+                        <button onClick={(ev) => openOrPick(e, ev)}>{e.name}</button>
                         {favorites.has(e.path) && <span className="star" aria-label="favorite">★</span>}
                       </div>
                     </td>
@@ -722,6 +786,10 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       )}
       {open && open.kind !== "sheet" && open.kind !== "text" && open.kind !== "csv" && (
         <Preview entry={open} onClose={() => setOpen(null)} />
+      )}
+
+      {marquee && (
+        <div className="marquee" style={{ left: marquee.left, top: marquee.top, width: marquee.right - marquee.left, height: marquee.bottom - marquee.top }} />
       )}
 
       {menu && (
