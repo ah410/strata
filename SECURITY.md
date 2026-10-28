@@ -20,7 +20,7 @@ Only the latest release gets fixes. Images are published to
 `ghcr.io/ah410/strata` and signed with cosign; check one with:
 
 ```bash
-cosign verify ghcr.io/ah410/strata:1.0.0 \
+cosign verify ghcr.io/ah410/strata:1.1.0 \
   --certificate-identity-regexp '^https://github.com/ah410/strata/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
@@ -33,6 +33,9 @@ files; escapes from the served directory (path traversal, symlinks, the
 Markdown; request forgery; bypassing the sign-in throttle; and denial of
 service from a single small request (image bombs, zip bombs, unbounded
 walks).
+
+That includes the WebDAV mount when `STRATA_WEBDAV=on`, and archives
+extracted with **Extract here**.
 
 Out of scope: attacks that need the passphrase or the container's logs (the
 first-run setup code is printed there by design), and deployments with
@@ -48,5 +51,20 @@ anything a browser would execute is served as plain text. State-changing
 requests need a custom header and a same-origin fetch, and the `Host` header
 is checked against an allowlist to stop DNS rebinding. The passphrase is
 hashed with argon2id, and sign-in attempts are throttled per client and
-globally. CI runs CodeQL, govulncheck, gitleaks and Snyk, and every third-party
+globally.
+
+Extracting an archive refuses entries that climb out of the target folder
+or use absolute paths, skips symlinks and hard links, counts inflated bytes
+as they're written against the free space, and builds the result in a hidden
+folder that is renamed into place only when it's complete. Document previews
+read through fixed caps on file size and on how much is decompressed.
+
+WebDAV uses HTTP Basic auth over HTTPS with the same passphrase and
+throttle as the web UI. It refuses POST, and any request carrying a
+cross-site `Origin` or fetch metadata, so a web page can't drive it; its
+other methods need a CORS preflight that Strata never grants. Files it
+serves get the same sandboxing headers as in the UI and are sent as
+downloads.
+
+CI runs CodeQL, govulncheck, gitleaks and Snyk, and every third-party
 action is pinned to a commit.

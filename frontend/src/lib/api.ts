@@ -54,6 +54,62 @@ export interface Usage {
   used: number;
 }
 
+export interface Job<R = unknown> {
+  id: string;
+  kind: string;
+  state: "queued" | "running" | "done" | "failed" | "canceled";
+  done: number;
+  total: number;
+  result?: R;
+  error?: string;
+}
+
+export interface SizeEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: number;
+  files?: number;
+  kind: Kind;
+}
+
+export interface SizeReport {
+  ready: boolean;
+  scanning: boolean;
+  seen: number;
+  scanned: string;
+  path: string;
+  size: number;
+  files: number;
+  hidden: number;
+  children: SizeEntry[];
+  largest: SizeEntry[];
+  kinds: Partial<Record<Kind, number>>;
+  trash: number;
+  versions: number;
+}
+
+export interface DocPeek {
+  type: "text" | "table" | "doc" | "slides";
+  lines?: string[];
+  rows?: string[][];
+  blocks?: { text: string; heading?: boolean }[];
+  slides?: number;
+}
+
+export interface FileInfo extends Entry {
+  type?: string;
+  items?: number;
+  width?: number;
+  height?: number;
+}
+
+export interface DupeGroup {
+  size: number;
+  paths: string[];
+  wasted: number;
+}
+
 export interface CellStyle {
   bold?: boolean;
   italic?: boolean;
@@ -103,6 +159,20 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The message to show for a failed response. Proxies answer with HTML pages,
+ * which make no sense in a toast, so those become a plain sentence.
+ */
+export function errorText(status: number, body: string, fallback = `${status} error`): string {
+  const text = body.trim();
+  if (/^<|<html|<body/i.test(text)) {
+    if (status === 413) return "The reverse proxy in front of Strata rejected the request as too large";
+    if (status === 502 || status === 503 || status === 504) return "Strata didn't answer in time (the proxy returned " + status + ")";
+    return `The server returned an error page (${status})`;
+  }
+  return text || fallback;
+}
+
 // The server rejects state-changing requests without this header; a
 // cross-site page can't add it without a CORS preflight we never approve.
 const GUARD = { "X-Strata": "1" };
@@ -113,7 +183,7 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
     signedOut();
   }
   if (!res.ok) {
-    throw new ApiError((await res.text()).trim() || `${res.status} ${res.statusText}`, res.status);
+    throw new ApiError(errorText(res.status, await res.text(), `${res.status} ${res.statusText}`), res.status);
   }
   return res.json() as Promise<T>;
 }
@@ -146,6 +216,8 @@ export const api = {
 
   list: (path: string) => req<Listing>(`/api/list?path=${q(path)}`),
   usage: () => req<Usage>("/api/usage"),
+  sizes: (path: string, rescan = false) =>
+    req<SizeReport>(`/api/usage/tree?path=${q(path)}${rescan ? "&rescan=1" : ""}`),
   text: (path: string) => req<TextFile>(`/api/text?path=${q(path)}`),
 
   /** Saves text; an empty version creates a new file. Resolves to the new version. */
@@ -158,6 +230,9 @@ export const api = {
 
   /** The mtime in the URL means a changed image gets a fresh thumbnail. */
   thumbUrl: (e: Entry) => `/api/thumb?path=${q(e.path)}&m=${q(e.modified)}`,
+
+  /** A document's text peek for its grid card; the mtime keys the cache. */
+  peek: (e: Entry) => req<DocPeek>(`/api/preview?path=${q(e.path)}&m=${q(e.modified)}`),
 
   state: () => req<AppState>("/api/state"),
 
@@ -246,6 +321,43 @@ export const api = {
     req<SearchResult>(`/api/search?path=${q(path)}&q=${q(query)}`, { signal }),
 
   zipUrl: (paths: string[]) => `/api/zip?${paths.map((p) => `path=${q(p)}`).join("&")}`,
+
+  /** Starts unpacking an archive; resolves to the job id. */
+  extract: (path: string) =>
+    req<{ job: string }>("/api/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }).then((r) => r.job),
+
+  /** Starts zipping paths into dir on the share; resolves to the job id. */
+  compress: (paths: string[], dir: string) =>
+    req<{ job: string }>("/api/compress", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths, dir }),
+    }).then((r) => r.job),
+
+  info: (path: string) => req<FileInfo>(`/api/info?path=${q(path)}`),
+
+  /** Starts hashing a file; resolves to the job id. */
+  checksum: (path: string) =>
+    req<{ job: string }>("/api/checksum", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }).then((r) => r.job),
+
+  /** Starts a duplicate search below path; resolves to the job id. */
+  duplicates: (path: string, minSize: number) =>
+    req<{ job: string }>("/api/duplicates", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, minSize }),
+    }).then((r) => r.job),
+
+  job: <R>(id: string) => req<Job<R>>(`/api/jobs/${q(id)}`),
+  cancelJob: (id: string) => fetch(`/api/jobs/${q(id)}`, { method: "DELETE", headers: GUARD }),
 
   downloadUrl: (path: string) => `/api/download?path=${q(path)}`,
   rawUrl: (path: string) => `/api/raw?path=${q(path)}`,

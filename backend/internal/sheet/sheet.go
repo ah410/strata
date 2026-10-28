@@ -474,3 +474,34 @@ func contains(ss []string, s string) bool {
 	}
 	return false
 }
+
+// Peek returns the top-left values of the first sheet, for a preview card.
+// It streams rows instead of loading the whole sheet.
+func Peek(root *safepath.Root, rel string, maxRows, maxCols int) ([][]string, error) {
+	f, _, err := open(root, rel)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	names := f.GetSheetList()
+	if len(names) == 0 {
+		return nil, userr.Error("workbook has no sheets")
+	}
+	rows, err := f.Rows(names[0])
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := [][]string{}
+	for len(out) < maxRows && rows.Next() {
+		cols, err := rows.Columns()
+		if err != nil {
+			return nil, err
+		}
+		if len(cols) > maxCols {
+			cols = cols[:maxCols]
+		}
+		out = append(out, cols)
+	}
+	return out, nil
+}

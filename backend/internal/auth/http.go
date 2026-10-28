@@ -26,6 +26,7 @@ type Gate struct {
 	limiter  *Limiter
 	trusted  []netip.Prefix
 	setup    *setup
+	basic    basicCache
 }
 
 // NewGate builds a Gate. trusted lists proxy addresses or CIDRs whose

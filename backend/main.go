@@ -30,7 +30,10 @@ import (
 	"golang.org/x/term"
 
 	"strata/internal/auth"
+	"strata/internal/dav"
 	"strata/internal/fileops"
+	"strata/internal/jobs"
+	"strata/internal/preview"
 	"strata/internal/safepath"
 	"strata/internal/sheet"
 	"strata/internal/state"
@@ -47,6 +50,10 @@ var embedded embed.FS
 // is generous; the reverse proxy should carry a matching limit.
 const maxUpload = 8 << 30 // 8 GiB
 
+// maxFile caps one resumable upload. Chunks land on disk as they arrive, so
+// free space is the real limit; this only rejects absurd sizes.
+const maxFile = 1 << 50 // 1 PiB
+
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
@@ -54,6 +61,12 @@ var (
 	root     *safepath.Root
 	thumbs   *thumb.Cache
 	appState *state.Store // nil without a config volume
+	// Two at a time: extracts and scans are disk-bound, more just thrash.
+	runner = jobs.New(2, time.Hour)
+	sizer  *fileops.Sizer
+	peeks  = preview.NewCache(1000)
+	// Off unless STRATA_WEBDAV=on: a mountable drive is more surface.
+	davEnabled bool
 )
 
 func main() {
@@ -88,14 +101,18 @@ func main() {
 		tlsKey  = flag.String("tls-key", envOr("STRATA_TLS_KEY", ""), "TLS private key (PEM)")
 		// Days a deleted item stays restorable.
 		trashDays = flag.Int("trash-days", envInt("STRATA_TRASH_DAYS", 30), "days to keep deleted items")
+		// Mount the share as a network drive at /dav.
+		webdavMode = flag.String("webdav", envOr("STRATA_WEBDAV", "off"), `"on" to serve the share over WebDAV at /dav`)
 	)
 	flag.Parse()
+	davEnabled = *webdavMode == "on"
 
 	r, err := safepath.NewRoot(*dir)
 	if err != nil {
 		log.Fatalf("root %q unusable: %v", *dir, err)
 	}
 	root = r
+	sizer = fileops.NewSizer(root, 15*time.Minute)
 	log.Printf("strata %s serving %s on %s", version, root.Path(), *addr)
 
 	config, err := configDir(*cfgDir)
@@ -291,11 +308,13 @@ func newHandler(name string, hosts []string, gate *auth.Gate) http.Handler {
 	})
 	mux.HandleFunc("GET /api/list", handleList)
 	mux.HandleFunc("GET /api/usage", handleUsage)
+	mux.HandleFunc("GET /api/usage/tree", handleUsageTree)
 	mux.HandleFunc("GET /api/download", handleDownload)
 	mux.HandleFunc("GET /api/raw", handleRaw)
 	mux.HandleFunc("GET /api/text", handleText)
 	mux.HandleFunc("POST /api/text", handleTextWrite)
 	mux.HandleFunc("GET /api/thumb", handleThumb)
+	mux.HandleFunc("GET /api/preview", handlePreview)
 	mux.HandleFunc("GET /api/state", handleState)
 	mux.HandleFunc("POST /api/favorite", handleFavorite)
 	mux.HandleFunc("POST /api/recent", handleRecent)
@@ -309,6 +328,13 @@ func newHandler(name string, hosts []string, gate *auth.Gate) http.Handler {
 	mux.HandleFunc("DELETE /api/uploads/{id}", handleUploadAbort)
 	mux.HandleFunc("GET /api/search", handleSearch)
 	mux.HandleFunc("GET /api/zip", handleZip)
+	mux.HandleFunc("POST /api/extract", handleExtract)
+	mux.HandleFunc("POST /api/compress", handleCompress)
+	mux.HandleFunc("GET /api/info", handleInfo)
+	mux.HandleFunc("POST /api/duplicates", handleDuplicates)
+	mux.HandleFunc("POST /api/checksum", handleChecksum)
+	mux.HandleFunc("GET /api/jobs/{id}", handleJob)
+	mux.HandleFunc("DELETE /api/jobs/{id}", handleJobCancel)
 	mux.HandleFunc("POST /api/mkdir", handleMkdir)
 	mux.HandleFunc("POST /api/move", handleMove)
 	mux.HandleFunc("POST /api/copy", handleCopy)
@@ -320,6 +346,16 @@ func newHandler(name string, hosts []string, gate *auth.Gate) http.Handler {
 	mux.HandleFunc("GET /api/versions/download", handleVersionDownload)
 	mux.HandleFunc("POST /api/versions/restore", handleVersionRestore)
 	mux.HandleFunc("/", handleStatic)
+
+	if davEnabled {
+		var d http.Handler = dav.Handler(root)
+		if gate != nil {
+			d = gate.Basic(d)
+		}
+		mux.Handle(dav.Prefix+"/", d)
+		mux.Handle(dav.Prefix, d)
+		log.Printf("WebDAV on at %s/", dav.Prefix)
+	}
 
 	var h http.Handler = mux
 	if gate != nil {
@@ -454,6 +490,18 @@ func handleUsage(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, u)
 }
 
+// handleUsageTree serves the storage dashboard from the last scan.
+func handleUsageTree(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	rep, err := sizer.Report(q.Get("path"), q.Get("rescan") == "1")
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, rep)
+}
+
 func handleDownload(w http.ResponseWriter, r *http.Request) {
 	serveFile(w, r, r.URL.Query().Get("path"), true)
 }
@@ -555,6 +603,22 @@ func handleThumb(w http.ResponseWriter, r *http.Request) {
 	// The URL carries the mtime, so a changed file gets a new URL.
 	w.Header().Set("Cache-Control", "private, max-age=604800")
 	w.Write(b)
+}
+
+// handlePreview returns a document's text peek for its grid card.
+func handlePreview(w http.ResponseWriter, r *http.Request) {
+	p, err := peeks.Get(root, r.URL.Query().Get("path"))
+	if errors.Is(err, preview.ErrUnsupported) {
+		http.Error(w, err.Error(), http.StatusUnsupportedMediaType)
+		return
+	}
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	// The URL carries the mtime, so a changed file gets a new URL.
+	w.Header().Set("Cache-Control", "private, max-age=604800")
+	writeJSON(w, p)
 }
 
 // handleState returns favorites and recent files that still exist.
@@ -742,7 +806,7 @@ func handleUploadStart(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	id, err := fileops.StartUpload(root, path.Join(safepath.Clean(req.Dir), rel), req.Size, maxUpload)
+	id, err := fileops.StartUpload(root, path.Join(safepath.Clean(req.Dir), rel), req.Size, maxFile)
 	if err != nil {
 		fail(w, err)
 		return
@@ -832,6 +896,129 @@ func handleZip(w http.ResponseWriter, r *http.Request) {
 		log.Printf("zip: %v", err)
 		panic(http.ErrAbortHandler)
 	}
+}
+
+// handleExtract unpacks an archive into a new folder beside it, as a job.
+func handleExtract(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	rel, err := fileops.ExtractCheck(root, req.Path)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	id := runner.Start("extract", func(ctx context.Context, report jobs.Progress) (any, error) {
+		return fileops.Extract(ctx, root, rel, extractLimits(), report)
+	})
+	writeJSON(w, map[string]any{"job": id})
+}
+
+// handleCompress saves a selection as a zip in a folder on the share.
+func handleCompress(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Paths []string `json:"paths"`
+		Dir   string   `json:"dir"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	paths, err := fileops.ZipCheck(root, req.Paths)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if _, err := fileops.List(root, req.Dir); err != nil {
+		fail(w, err)
+		return
+	}
+	id := runner.Start("compress", func(ctx context.Context, report jobs.Progress) (any, error) {
+		return fileops.Compress(ctx, root, paths, req.Dir, report)
+	})
+	writeJSON(w, map[string]any{"job": id})
+}
+
+func handleInfo(w http.ResponseWriter, r *http.Request) {
+	in, err := fileops.Describe(root, r.URL.Query().Get("path"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, in)
+}
+
+// handleChecksum hashes a file as a job; a large video takes a while.
+func handleChecksum(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	e, err := fileops.Stat(root, req.Path)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if e.IsDir {
+		fail(w, userr.Error("only files have a checksum"))
+		return
+	}
+	id := runner.Start("checksum", func(ctx context.Context, report jobs.Progress) (any, error) {
+		return fileops.Checksum(ctx, root, e.Path, report)
+	})
+	writeJSON(w, map[string]any{"job": id})
+}
+
+// handleDuplicates looks for identical files below a folder, as a job.
+func handleDuplicates(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path    string `json:"path"`
+		MinSize int64  `json:"minSize"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	l, err := fileops.List(root, req.Path)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	id := runner.Start("duplicates", func(ctx context.Context, report jobs.Progress) (any, error) {
+		return fileops.Duplicates(ctx, root, l.Path, req.MinSize, report)
+	})
+	writeJSON(w, map[string]any{"job": id})
+}
+
+// extractLimits caps an archive at the free space, less a margin so a bomb
+// can't fill the pool to the last byte.
+func extractLimits() fileops.ExtractLimits {
+	lim := fileops.ExtractLimits{MaxFiles: 500_000, MaxBytes: 1 << 62}
+	if u, err := fileops.Usage(root); err == nil {
+		lim.MaxBytes = max(int64(u.Free)-int64(u.Total/100), 0)
+	}
+	return lim
+}
+
+func handleJob(w http.ResponseWriter, r *http.Request) {
+	j, ok := runner.Get(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, j)
+}
+
+func handleJobCancel(w http.ResponseWriter, r *http.Request) {
+	if !runner.Cancel(r.PathValue("id")) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func handleMkdir(w http.ResponseWriter, r *http.Request) {

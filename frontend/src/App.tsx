@@ -1,17 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, type AppState, type Entry, type Listing, type SearchResult } from "./lib/api";
-import { fromDrop, fromInput, uploadAll, type UploadItem } from "./lib/upload";
-import { bytes, joinPath, parentOf, when } from "./lib/format";
+import { Canceled, fromDrop, fromInput, fromPaste, uploadAll, type UploadItem, type UploadStatus } from "./lib/upload";
+import { UploadPanel } from "./components/UploadPanel";
+import { bytes, freeCopyName, joinPath, parentOf, when } from "./lib/format";
 import { Capacity } from "./components/Capacity";
 import { Glyph } from "./components/Glyph";
 import { Preview, canPreview } from "./components/Preview";
 import { SheetEditor } from "./components/SheetEditor";
-import { AppearanceDialog } from "./components/Appearance";
+import { AppearanceDialog, type SettingsSection } from "./components/Appearance";
 import { History } from "./components/History";
 import { TrashView } from "./components/TrashView";
 import { FolderPicker } from "./components/FolderPicker";
 import { FileGrid } from "./components/FileGrid";
 import { TextEditor } from "./components/TextEditor";
+import { actionForKey, actionsFor, type ActionId, type Ctx } from "./lib/actions";
+import { combo, display, step, typeahead, TYPEAHEAD_MS } from "./lib/keys";
+import { ContextMenu } from "./components/ContextMenu";
+import { InfoDialog } from "./components/Info";
+import { Palette, type Command } from "./components/Palette";
+import { follow } from "./lib/jobs";
+import { box, overlaps, range, type Box } from "./lib/selection";
 
 // Rows dragged inside Strata carry their paths under this type.
 const DRAG_TYPE = "application/x-strata-paths";
@@ -38,18 +46,33 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [open, setOpen] = useState<Entry | null>(null);
   const [prompt, setPrompt] = useState<null | { title: string; label: string; value: string; onOk: (v: string) => void }>(null);
   const [note, setNote] = useState<Note>(null);
-  const [uploadPct, setUploadPct] = useState<number | null>(null);
+  const [progress, setProgress] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
-  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [appearanceOpen, setAppearanceOpen] = useState<false | SettingsSection>(false);
   const [historyPath, setHistoryPath] = useState<string | null>(null);
   const closeHistory = useCallback(() => setHistoryPath(null), []);
+  const [infoPath, setInfoPath] = useState<string | null>(null);
+  const [palette, setPalette] = useState(false);
+  // A path to select once its folder's listing arrives.
+  const reveal = useRef<string | null>(null);
+  const closeInfo = useCallback(() => setInfoPath(null), []);
   const noteTimer = useRef<number>();
   const [query, setQuery] = useState("");
   const [found, setFound] = useState<SearchResult | null>(null);
   const [searching, setSearching] = useState(false);
-  const [picker, setPicker] = useState<null | "move" | "copy">(null);
+  const [picker, setPicker] = useState<null | { mode: "move" | "copy"; items: Entry[] }>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const [menu, setMenu] = useState<null | { x: number; y: number; sel: Entry[] }>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
+  const anchor = useRef<string | null>(null);
+  // The keyboard's current item: highlighted, moved with the arrow keys.
+  const [cursor, setCursor] = useState<string | null>(null);
+  const typed = useRef({ text: "", at: 0 });
+  const searchInput = useRef<HTMLInputElement>(null);
+  useEffect(() => setCursor(null), [path]);
+  const [clip, setClip] = useState<null | { cut: boolean; items: Entry[] }>(null);
+  const [marquee, setMarquee] = useState<Box | null>(null);
 
   const loadSaved = useCallback(() => { api.state().then(setSaved, () => undefined); }, []);
   useEffect(loadSaved, [loadSaved]);
@@ -70,7 +93,13 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       (l) => {
         setListing(l);
         setError(null);
-        setPicked(new Set());
+        const r = reveal.current;
+        reveal.current = null;
+        setPicked(new Set(r ? [r] : []));
+        if (r) {
+          setCursor(r);
+          requestAnimationFrame(() => document.querySelector(`.listing [data-path="${CSS.escape(r)}"]`)?.scrollIntoView({ block: "center" }));
+        }
       },
       (e: Error) => {
         setError(e.message);
@@ -144,15 +173,72 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     window.location.href = api.downloadUrl(e.path);
   };
 
-  const togglePick = (p: string, on: boolean) =>
+  const togglePick = (p: string, on: boolean) => {
+    anchor.current = p;
+    setCursor(p);
     setPicked((s) => {
       const next = new Set(s);
       on ? next.add(p) : next.delete(p);
       return next;
     });
+  };
 
-  const starPicked = async () => {
-    const targets = [...picked];
+  type Mods = { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean };
+  const hasMods = (ev: Mods) => ev.shiftKey || ev.ctrlKey || ev.metaKey;
+  // Click selects one, Ctrl/Cmd toggles, Shift extends from the last click.
+  const pick = (p: string, ev: Mods, add = ev.ctrlKey || ev.metaKey) => {
+    setCursor(p);
+    if (ev.shiftKey) {
+      const span = range(rows.map((e) => e.path), anchor.current, p);
+      setPicked((s) => new Set([...(add ? s : []), ...span]));
+      return;
+    }
+    if (add) return togglePick(p, !picked.has(p));
+    anchor.current = p;
+    setPicked(new Set([p]));
+  };
+  // Names and thumbnails open on a plain click and select with a modifier.
+  const openOrPick = (e: Entry, ev: React.MouseEvent) => {
+    ev.stopPropagation();
+    if (hasMods(ev)) pick(e.path, ev);
+    else activate(e);
+  };
+  // A Shift-click on a checkbox adds the whole range.
+  const checkClick = (e: Entry, ev: React.MouseEvent) => {
+    if (!ev.shiftKey) return;
+    ev.preventDefault();
+    pick(e.path, ev, true);
+  };
+
+  // Dragging on empty space draws a box that selects what it touches.
+  const startMarquee = (ev: React.MouseEvent) => {
+    if (ev.button !== 0 || (ev.target as Element).closest("[data-path], button, input, a, thead, .search-note")) return;
+    const x0 = ev.clientX, y0 = ev.clientY;
+    const base = hasMods(ev) ? new Set(picked) : new Set<string>();
+    const items = [...document.querySelectorAll<HTMLElement>(".listing [data-path]")].map((el) => ({
+      path: el.dataset.path!,
+      rect: el.getBoundingClientRect(),
+    }));
+    let moved = false;
+    const move = (m: MouseEvent) => {
+      if (!moved && Math.abs(m.clientX - x0) + Math.abs(m.clientY - y0) < 5) return;
+      moved = true;
+      const b = box(x0, y0, m.clientX, m.clientY);
+      setMarquee(b);
+      setPicked(new Set([...base, ...items.filter((i) => overlaps(b, i.rect)).map((i) => i.path)]));
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setMarquee(null);
+      if (!moved && !hasMods(ev)) setPicked(new Set());
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    ev.preventDefault();
+  };
+
+  const star = async (targets: string[]) => {
     const on = !targets.every((p) => favorites.has(p));
     try {
       for (const p of targets) await api.favorite(p, on);
@@ -207,24 +293,70 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     return parts.map((name, i) => ({ name, path: parts.slice(0, i + 1).join("/") }));
   }, [path]);
 
-  const upload = async (list: UploadItem[]) => {
-    if (!list.length) return;
-    setUploadPct(0);
-    try {
-      await uploadAll(path, list, setUploadPct);
-      toast(`Uploaded ${list.length} file${list.length === 1 ? "" : "s"}`);
-      refresh();
-    } catch (e) {
-      toast((e as Error).message, true);
-    } finally {
-      setUploadPct(null);
-    }
+  // Uploads run one at a time; more dropped meanwhile wait in a queue.
+  const [upState, setUpState] = useState<null | { dir: string; status: UploadStatus }>(null);
+  const [queued, setQueued] = useState(0);
+  const queue = useRef<{ dir: string; items: UploadItem[] }[]>([]);
+  const running = useRef<AbortController | null>(null);
+  const lastReload = useRef(0);
+  const pathRef = useRef(path);
+  pathRef.current = path;
+
+  // Shows new files without touching the selection or the search.
+  const reloadQuiet = () => {
+    lastReload.current = Date.now();
+    api.list(pathRef.current).then(setListing, () => undefined);
   };
+
+  const upload = (list: UploadItem[]) => {
+    if (!list.length) return;
+    queue.current.push({ dir: path, items: list });
+    if (running.current) setQueued(queue.current.reduce((n, q) => n + q.items.length, 0));
+    else drain();
+  };
+
+  const drain = async () => {
+    while (queue.current.length) {
+      const job = queue.current.shift()!;
+      setQueued(queue.current.reduce((n, q) => n + q.items.length, 0));
+      const ctl = new AbortController();
+      running.current = ctl;
+      try {
+        const n = await uploadAll(job.dir, job.items, {
+          signal: ctl.signal,
+          onProgress: (status) => setUpState({ dir: job.dir, status }),
+          // Files appear as they land, at most every couple of seconds.
+          onLanded: () => Date.now() - lastReload.current > 2000 && reloadQuiet(),
+        });
+        toast(`Uploaded ${plural(n, "file")} to /${job.dir}`);
+      } catch (e) {
+        if (e instanceof Canceled) {
+          queue.current = [];
+          setQueued(0);
+          toast("Upload canceled. Files that had finished are kept.");
+          // A batch can still be landing as the cancel goes out.
+          window.setTimeout(reloadQuiet, 1500);
+        } else {
+          toast((e as Error).message, true);
+        }
+      }
+    }
+    running.current = null;
+    setUpState(null);
+    reloadQuiet();
+  };
+
+  // Closing the tab mid-upload asks first.
+  useEffect(() => {
+    if (!upState) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [!!upState]);
 
   // Deleting moves to the trash at once; the toast offers Undo. Only a
   // location without a trash asks before deleting permanently.
-  const removePicked = async () => {
-    const targets = [...picked];
+  const remove = async (targets: string[]) => {
     if (!targets.length) return;
     const ids: string[] = [];
     const noTrash: string[] = [];
@@ -287,8 +419,53 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     if (!copy) loadSaved();
   };
 
-  const downloadPicked = () => {
-    const sel = pickedEntries;
+  // Runs a server job with the top progress bar, then refreshes.
+  const runJob = async <R,>(start: Promise<string>, done: (r: R) => void) => {
+    setProgress(0);
+    try {
+      done(await follow<R>(await start, (p) => setProgress(p ?? 0)));
+      refresh();
+    } catch (e) {
+      toast((e as Error).message, true);
+    } finally {
+      setProgress(null);
+    }
+  };
+
+  const extract = (e: Entry) => {
+    toast(`Extracting ${e.name}…`);
+    runJob<string>(api.extract(e.path), (dest) =>
+      toast(`Extracted to ${dest.split("/").pop()}`, false, { label: "Open", run: () => navigate(dest) }));
+  };
+
+  // Pastes the clipboard into dest. Names that are taken get " (copy)",
+  // so pasting into the same folder duplicates instead of failing.
+  const paste = async (dest: string) => {
+    if (!clip) return;
+    const taken = new Set((dest === path && listing ? listing.entries : (await api.list(dest).catch(() => null))?.entries ?? []).map((e) => e.name));
+    let ok = 0;
+    for (const { path: p, isDir } of clip.items) {
+      if (dest === p || dest.startsWith(p + "/")) {
+        toast(`Can't paste a folder into itself`, true);
+        continue;
+      }
+      if (clip.cut && parentOf(p) === dest) continue;
+      const name = freeCopyName(p.split("/").pop()!, taken, isDir);
+      try {
+        await (clip.cut ? api.move(p, joinPath(dest, name)) : api.copy(p, joinPath(dest, name)));
+        taken.add(name);
+        ok++;
+      } catch (e) {
+        toast(`${p.split("/").pop()}: ${(e as Error).message}`, true);
+      }
+    }
+    if (ok) toast(`${clip.cut ? "Moved" : "Copied"} ${plural(ok, "item")} to /${dest}`);
+    if (clip.cut) setClip(null);
+    refresh();
+    if (clip.cut) loadSaved();
+  };
+
+  const download = (sel: Entry[]) => {
     if (sel.length === 1 && !sel[0].isDir) window.location.href = api.downloadUrl(sel[0].path);
     else if (sel.length) window.location.href = api.zipUrl(sel.map((e) => e.path));
   };
@@ -297,7 +474,19 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   // Drag source on every item, drop target on folders; shared by both layouts.
   const rowProps = (e: Entry) => ({
     draggable: true,
-    className: dropTarget === e.path ? " drop-on" : "",
+    "data-path": e.path,
+    "data-cut": clip?.cut && clip.items.some((c) => c.path === e.path) ? "" : undefined,
+    onClick: (ev: React.MouseEvent) => {
+      if (!(ev.target as Element).closest("button, input, a")) pick(e.path, ev);
+    },
+    onContextMenu: (ev: React.MouseEvent) => {
+      ev.stopPropagation();
+      // Right-clicking outside the selection acts on that item alone.
+      const sel = picked.has(e.path) ? pickedEntries : [e];
+      if (!picked.has(e.path)) setPicked(new Set([e.path]));
+      openMenu(ev, sel);
+    },
+    className: (dropTarget === e.path ? " drop-on" : "") + (cursor === e.path ? " cursor" : ""),
     onDragStart: (ev: React.DragEvent) => {
       ev.dataTransfer.setData(DRAG_TYPE, JSON.stringify(dragPaths(e)));
       ev.dataTransfer.effectAllowed = "copyMove";
@@ -305,6 +494,20 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     onDragEnd: () => setDropTarget(null),
     ...(e.isDir ? dropProps(e.path) : {}),
   });
+  // Shift+right-click keeps the browser's own menu as an escape hatch.
+  const openMenu = (ev: React.MouseEvent, sel: Entry[]) => {
+    if (ev.shiftKey) return;
+    ev.preventDefault();
+    let { clientX: x, clientY: y } = ev;
+    if (!x && !y) {
+      // Menu key or Shift+F10: open at the element instead of the corner.
+      const r = (ev.currentTarget as Element).getBoundingClientRect();
+      x = r.left + 24;
+      y = r.top + r.height / 2;
+    }
+    setMenu({ x, y, sel });
+  };
+
   const dropProps = (dest: string) => ({
     onDragOver: (ev: React.DragEvent) => {
       if (!ev.dataTransfer.types.includes(DRAG_TYPE)) return;
@@ -324,9 +527,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     },
   });
 
-  const renamePicked = () => {
-    const target = [...picked][0];
-    if (!target) return;
+  const rename = (target: string) => {
     const current = target.split("/").pop() ?? "";
     setPrompt({
       title: "Rename",
@@ -351,25 +552,192 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       },
     });
 
+  const ctx = (selection: Entry[]): Ctx => ({ selection, canStar: !!saved?.enabled, favorites, layout, clipboard: clip?.items.length ?? 0 });
+
+  // What each registry action does, applied to an explicit selection.
+  const perform = (id: ActionId, sel: Entry[]) => {
+    const paths = sel.map((e) => e.path);
+    switch (id) {
+      case "open": return sel[0] && activate(sel[0]);
+      case "extract": return sel[0] && extract(sel[0]);
+      case "info": return sel[0] && setInfoPath(sel[0].path);
+      case "rename": return sel[0] && rename(sel[0].path);
+      case "history": return sel[0] && setHistoryPath(sel[0].path);
+      case "star": return star(paths);
+      case "cut": case "clip":
+        setClip({ cut: id === "cut", items: sel });
+        return toast(`${id === "cut" ? "Cut" : "Copied"} ${plural(paths.length, "item")}. Paste in another folder.`);
+      case "paste": return paste(path);
+      case "pasteInto": return sel[0] && paste(sel[0].path);
+      case "move": case "copy": return setPicker({ mode: id, items: sel });
+      case "download": return download(sel);
+      case "compress":
+        toast(`Compressing ${plural(sel.length, "item")}…`);
+        return runJob<string>(api.compress(paths, searchMode ? parentOf(paths[0]) : path), (zip) =>
+          toast(`Saved ${zip.split("/").pop()}`));
+      case "delete": return remove(paths);
+      case "layout": return setLayout(layout === "list" ? "grid" : "list");
+      case "newFolder": return newFolder();
+      case "newFile": return newTextFile();
+      case "uploadFolder": return folderInput.current?.click();
+      case "upload": return fileInput.current?.click();
+      case "selectAll": return setPicked(new Set(rows.map((e) => e.path)));
+      case "refresh": return refresh();
+    }
+  };
+
+  // What the palette offers besides file names: actions for the current
+  // selection or folder, then places to go.
+  const commands = (): Command[] => {
+    const sel = pickedEntries;
+    const acts = [...actionsFor(ctx(sel), "menu"), ...(sel.length ? actionsFor(ctx([]), "menu") : [])];
+    return [
+      ...acts.map((a) => {
+        const c = a.on === "item" ? ctx(sel) : ctx([]);
+        return {
+          id: "act:" + a.id + a.on,
+          label: a.on === "item" && sel.length > 1 ? `${a.label(c)} ${plural(sel.length, "item")}` : a.on === "item" ? `${a.label(c)}: ${sel[0].name}` : a.label(c),
+          hint: a.keys && display(a.keys[0]),
+          section: "Actions",
+          run: () => perform(a.id, a.on === "item" ? sel : []),
+        };
+      }),
+      { id: "go:all", label: "All files", section: "Go to", run: () => navigate("") },
+      ...(path ? [{ id: "go:up", label: "Parent folder", section: "Go to", run: () => navigate(parentOf(path)) }] : []),
+      { id: "go:recent", label: "Recent files", section: "Go to", run: () => setView("recent") },
+      { id: "go:trash", label: "Trash", section: "Go to", run: () => setView("trash") },
+      { id: "go:settings", label: "Settings", section: "Go to", run: () => setAppearanceOpen("appearance") },
+      { id: "go:keys", label: "Keyboard shortcuts", hint: "?", section: "Go to", run: () => setAppearanceOpen("shortcuts") },
+      ...(saved?.favorites ?? []).map((f) => ({ id: "fav:" + f.path, label: f.name, hint: "★", section: "Favorites", run: () => activate(f) })),
+    ];
+  };
+
+  // Moves the keyboard cursor to rows[i], selecting as a click would.
+  const moveTo = (i: number, mods: Mods) => {
+    const e = rows[i];
+    if (!e) return;
+    // A button or checkbox clicked earlier would otherwise take Enter and Space.
+    const focused = document.activeElement as HTMLElement | null;
+    if (focused?.closest(".listing, .actions")) focused.blur();
+    if (mods.ctrlKey || mods.metaKey) setCursor(e.path);
+    else pick(e.path, mods);
+    document.querySelector(`.listing [data-path="${CSS.escape(e.path)}"]`)?.scrollIntoView({ block: "nearest" });
+  };
+
+  const gridCols = () => {
+    const cards = [...document.querySelectorAll<HTMLElement>(".grid-view .card")];
+    return layout === "grid" && cards.length ? cards.filter((c) => c.offsetTop === cards[0].offsetTop).length : 1;
+  };
+
+  // Rebound every render so it always sees current state; it's one listener.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      // The palette opens from anywhere, even the search box.
+      if (combo(e) === "Mod+K" && !document.querySelector(".scrim, .overlay")) {
+        e.preventDefault();
+        return setPalette(true);
+      }
+      if (view !== "files" || e.defaultPrevented) return;
+      if (t.closest?.("input:not([type=checkbox]), textarea, select, [contenteditable=true]")) return;
+      if (document.querySelector(".scrim, .overlay, .menu")) return;
+      const k = combo(e);
+      // Let a focused button or checkbox handle its own activation.
+      if ((k === "Enter" || k === "Space") && t.closest?.("button, input, a")) return;
+      // With text selected, Ctrl+C copies the text as usual.
+      if (k === "Mod+C" && window.getSelection()?.toString()) return;
+
+      // Enter opens the item under the keyboard cursor, folder or file.
+      const atCursor = cursor ? rows.find((r) => r.path === cursor) : undefined;
+      if (k === "Enter" && atCursor) {
+        e.preventDefault();
+        return activate(atCursor);
+      }
+      const a = actionForKey(k, ctx(pickedEntries));
+      if (a) {
+        e.preventDefault();
+        return perform(a.id, a.on === "space" ? [] : pickedEntries);
+      }
+      const idx = cursor ? rows.findIndex((r) => r.path === cursor) : -1;
+      const nav = k.replace(/^(Mod\+|Shift\+)+/, "");
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(nav) && !e.altKey) {
+        e.preventDefault();
+        return moveTo(step(idx, nav, rows.length, gridCols()), e);
+      }
+      switch (k) {
+        case "Space":
+          e.preventDefault();
+          if (cursor) togglePick(cursor, !picked.has(cursor));
+          return;
+        case "Backspace": case "Alt+ArrowUp":
+          e.preventDefault();
+          if (path && !searchMode) navigate(parentOf(path));
+          return;
+        case "/":
+          e.preventDefault();
+          return searchInput.current?.focus();
+        case "Escape":
+          if (query) return setQuery("");
+          setClip(null);
+          return setPicked(new Set());
+        case "?": case "Mod+/":
+          e.preventDefault();
+          return setAppearanceOpen("shortcuts");
+        case "Shift+F10": case "ContextMenu": {
+          e.preventDefault();
+          const el = document.querySelector(`.listing [data-path="${CSS.escape(cursor ?? "")}"]`) ?? document.querySelector(".listing");
+          const r = el!.getBoundingClientRect();
+          return setMenu({ x: r.left + 24, y: r.top + Math.min(r.height / 2, 40), sel: pickedEntries });
+        }
+      }
+      // Typing a name jumps to it.
+      if (k.length === 1 && k !== " ") {
+        const now = Date.now();
+        const tt = typed.current;
+        tt.text = now - tt.at < TYPEAHEAD_MS ? tt.text + k : k;
+        tt.at = now;
+        const i = typeahead(rows.map((r) => r.name), tt.text, tt.text.length === 1 ? idx + 1 : Math.max(idx, 0));
+        if (i >= 0) moveTo(i, { shiftKey: false, ctrlKey: false, metaKey: false });
+      }
+    };
+    // Pasting files or a screenshot uploads them here.
+    const onPaste = (e: ClipboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (view !== "files" || t.closest?.("input, textarea, [contenteditable=true]") || document.querySelector(".scrim, .overlay")) return;
+      const files = [...(e.clipboardData?.files ?? [])];
+      if (!files.length) return;
+      e.preventDefault();
+      upload(fromPaste(files));
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("paste", onPaste);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("paste", onPaste);
+    };
+  });
+
   return (
     <div className="shell">
       <aside className={`rail${railOpen ? " open" : ""}`}>
         <div className="rail-head">
-          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-            <rect x="1.5" y="2.5" width="13" height="3.4" rx="1" fill="var(--k-folder)" opacity=".85" />
-            <rect x="1.5" y="6.3" width="13" height="3.4" rx="1" fill="var(--k-sheet)" opacity=".7" />
-            <rect x="1.5" y="10.1" width="13" height="3.4" rx="1" fill="var(--k-video)" opacity=".55" />
-          </svg>
-          <span className="wordmark">Strata</span>
+          <button className="home" onClick={() => navigate("")} aria-label="Strata: all files" title="All files">
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="1.5" y="2.5" width="13" height="3.4" rx="1" fill="var(--k-folder)" opacity=".85" />
+              <rect x="1.5" y="6.3" width="13" height="3.4" rx="1" fill="var(--k-sheet)" opacity=".7" />
+              <rect x="1.5" y="10.1" width="13" height="3.4" rx="1" fill="var(--k-video)" opacity=".55" />
+            </svg>
+            <span className="wordmark">Strata</span>
+          </button>
           <button
             className="btn btn-icon"
-            onClick={() => setAppearanceOpen(true)}
-            aria-label="Appearance"
-            title="Appearance"
+            onClick={() => setAppearanceOpen("appearance")}
+            aria-label="Settings"
+            title="Settings"
           >
-            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-              <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.4" />
-              <path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor" />
+            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round">
+              <path d="M12.85 6.79 L14.51 6.92 L14.51 9.08 L12.85 9.21 L12.29 10.58 L13.37 11.84 L11.84 13.37 L10.58 12.29 L9.21 12.85 L9.08 14.51 L6.92 14.51 L6.79 12.85 L5.42 12.29 L4.16 13.37 L2.63 11.84 L3.71 10.58 L3.15 9.21 L1.49 9.08 L1.49 6.92 L3.15 6.79 L3.71 5.42 L2.63 4.16 L4.16 2.63 L5.42 3.71 L6.79 3.15 L6.92 1.49 L9.08 1.49 L9.21 3.15 L10.58 3.71 L11.84 2.63 L13.37 4.16 L12.29 5.42Z" />
+              <circle cx="8" cy="8" r="2" />
             </svg>
           </button>
           {onSignOut && (
@@ -432,7 +800,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
           )}
         </nav>
 
-        <Capacity />
+        <Capacity onNavigate={navigate} onOpenTrash={() => { setView("trash"); setRailOpen(false); }} />
       </aside>
 
       <main className="main">
@@ -471,62 +839,47 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
 
           <div className="search">
             <input
+              ref={searchInput}
               type="search"
               placeholder={path ? `Search in ${path.split("/").pop()}` : "Search all files"}
               aria-label="Search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Escape" && setQuery("")}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") { setQuery(""); e.currentTarget.blur(); }
+              }}
             />
           </div>
 
           <div className="actions">
-            {picked.size === 1 && (
-              <button className="btn" onClick={renamePicked}>
-                Rename
-              </button>
-            )}
-            {picked.size === 1 && pickedEntries[0] && !pickedEntries[0].isDir && (
-              <button className="btn" onClick={() => setHistoryPath([...picked][0])}>
-                History
-              </button>
-            )}
-            {picked.size > 0 && (
-              <>
-                {saved?.enabled && (
-                  <button className="btn" onClick={starPicked}>
-                    {[...picked].every((p) => favorites.has(p)) ? "Unstar" : "Star"}
-                  </button>
-                )}
-                <button className="btn" onClick={() => setPicker("move")}>Move</button>
-                <button className="btn" onClick={() => setPicker("copy")}>Copy</button>
-                <button className="btn" onClick={downloadPicked}>Download</button>
-                <button className="btn danger" onClick={removePicked}>Delete</button>
-              </>
-            )}
-            {picked.size === 0 && (
-              <>
-                <button
-                  className="btn btn-icon"
-                  onClick={() => setLayout(layout === "list" ? "grid" : "list")}
-                  aria-label={layout === "list" ? "Show as grid" : "Show as list"}
-                  title={layout === "list" ? "Show as grid" : "Show as list"}
-                >
+            {actionsFor(ctx(pickedEntries), "toolbar").map((a) => {
+              const c = ctx(pickedEntries);
+              return a.id === "layout" ? (
+                <button key={a.id} className="btn btn-icon" onClick={() => perform(a.id, [])} aria-label={a.label(c)} title={a.label(c)}>
                   {layout === "list" ? "▦" : "☰"}
                 </button>
-                <button className="btn" onClick={newFolder}>New folder</button>
-                <button className="btn" onClick={newTextFile}>New file</button>
-                <button className="btn" onClick={() => folderInput.current?.click()}>Upload folder</button>
-                <button className="btn primary" onClick={() => fileInput.current?.click()}>Upload</button>
-              </>
-            )}
+              ) : (
+                <button
+                  key={a.id}
+                  className={`btn${a.primary ? " primary" : ""}${a.danger ? " danger" : ""}`}
+                  onClick={() => perform(a.id, pickedEntries)}
+                >
+                  {a.label(c)}
+                </button>
+              );
+            })}
           </div>
         </div>
 
-        {uploadPct !== null && <div className="progress" style={{ width: `${uploadPct}%` }} />}
+        {progress !== null && <div className="progress" style={{ width: `${progress}%` }} />}
 
         <div
           className={`listing${dragging ? " dropping" : ""}`}
+          onMouseDown={startMarquee}
+          onContextMenu={(e) => {
+            setPicked(new Set());
+            openMenu(e, []);
+          }}
           onDragOver={(e) => {
             if (!e.dataTransfer.types.includes("Files")) return;
             e.preventDefault();
@@ -571,7 +924,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
           )}
 
           {!error && rows.length > 0 && layout === "grid" && (
-            <FileGrid rows={rows} picked={picked} togglePick={togglePick} activate={activate} favorites={favorites} rowProps={rowProps} />
+            <FileGrid rows={rows} picked={picked} togglePick={togglePick} openOrPick={openOrPick} checkClick={checkClick} favorites={favorites} rowProps={rowProps} />
           )}
 
           {!error && rows.length > 0 && layout === "list" && (
@@ -602,6 +955,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
                         className="pick"
                         checked={picked.has(e.path)}
                         aria-label={`Select ${e.name}`}
+                        onClick={(ev) => checkClick(e, ev)}
                         onChange={(ev) => togglePick(e.path, ev.target.checked)}
                       />
                     </td>
@@ -610,7 +964,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
                         <span className="glyph">
                           <Glyph kind={e.kind} />
                         </span>
-                        <button onClick={() => activate(e)}>{e.name}</button>
+                        <button onClick={(ev) => openOrPick(e, ev)}>{e.name}</button>
                         {favorites.has(e.path) && <span className="star" aria-label="favorite">★</span>}
                       </div>
                     </td>
@@ -657,11 +1011,11 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
 
       {picker && (
         <FolderPicker
-          title={`${picker === "move" ? "Move" : "Copy"} ${plural(picked.size, "item")} to…`}
-          action={picker === "move" ? "Move" : "Copy"}
+          title={`${picker.mode === "move" ? "Move" : "Copy"} ${plural(picker.items.length, "item")} to…`}
+          action={picker.mode === "move" ? "Move" : "Copy"}
           start={path}
-          blocked={pickedEntries.filter((e) => e.isDir).map((e) => e.path)}
-          onPick={(dest) => transfer([...picked], dest, picker === "copy")}
+          blocked={picker.items.filter((e) => e.isDir).map((e) => e.path)}
+          onPick={(dest) => transfer(picker.items.map((e) => e.path), dest, picker.mode === "copy")}
           onClose={() => setPicker(null)}
         />
       )}
@@ -676,7 +1030,34 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
         <Preview entry={open} onClose={() => setOpen(null)} />
       )}
 
-      {appearanceOpen && <AppearanceDialog onClose={() => setAppearanceOpen(false)} />}
+      {marquee && (
+        <div className="marquee" style={{ left: marquee.left, top: marquee.top, width: marquee.right - marquee.left, height: marquee.bottom - marquee.top }} />
+      )}
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={actionsFor(ctx(menu.sel), "menu").map((a) => ({ id: a.id, label: a.label(ctx(menu.sel)), group: a.group, danger: a.danger, hint: a.keys && display(a.keys[0]) }))}
+          onPick={(id) => perform(id as ActionId, menu.sel)}
+          onClose={closeMenu}
+        />
+      )}
+
+      {appearanceOpen && <AppearanceDialog start={appearanceOpen} onClose={() => setAppearanceOpen(false)} />}
+      {palette && (
+        <Palette
+          commands={commands()}
+          onClose={() => setPalette(false)}
+          onReveal={(e) => {
+            if (e.isDir) return navigate(e.path);
+            reveal.current = e.path;
+            if (parentOf(e.path) === path && view === "files") refresh();
+            else navigate(parentOf(e.path));
+          }}
+        />
+      )}
+      {infoPath && <InfoDialog path={infoPath} onClose={closeInfo} onNavigate={navigate} />}
       {historyPath && <History path={historyPath} onClose={closeHistory} onRestored={() => { toast("Version restored"); refresh(); }} />}
 
       {prompt && (
@@ -685,6 +1066,8 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
           onClose={() => setPrompt(null)}
         />
       )}
+
+      {upState && <UploadPanel status={upState.status} dir={upState.dir} queued={queued} onCancel={() => running.current?.abort()} />}
 
       {note && (
         <div className={`toast${note.error ? " err" : ""}`} role="status">

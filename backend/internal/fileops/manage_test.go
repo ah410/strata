@@ -186,6 +186,21 @@ func TestUploadRefusalsAndSweep(t *testing.T) {
 	if _, err := StartUpload(root, "big", 11, 10); err == nil {
 		t.Error("over-limit size accepted")
 	}
+	// Past the old 8 GiB cap is fine; past the disk's free space is not.
+	u, err := Usage(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StartUpload(root, "huge", int64(u.Free)+1, 1<<50); err == nil || !strings.Contains(err.Error(), "free space") {
+		t.Errorf("upload larger than free space: err = %v", err)
+	}
+	if u.Free > 9<<30 {
+		id, err := StartUpload(root, "takeout.zip", 9<<30, 1<<50)
+		if err != nil {
+			t.Errorf("9 GiB upload refused: %v", err)
+		}
+		AbortUpload(root, id)
+	}
 	if _, err := WriteChunk(root, "../../../etc/passwd", 0, strings.NewReader("x")); err == nil {
 		t.Error("bad id accepted")
 	}
@@ -269,5 +284,91 @@ func TestTextSaveDetectsConflicts(t *testing.T) {
 		if _, err := WriteText(root, bad, "", "x"); err == nil {
 			t.Errorf("WriteText(%q) accepted", bad)
 		}
+	}
+}
+
+func TestCompressSavesZipBesideItems(t *testing.T) {
+	root, dir := share(t)
+	write(t, dir, "Docs/a.txt", "alpha")
+	write(t, dir, "Docs/sub/b.txt", "beta")
+	write(t, dir, "Docs.zip", "taken")
+	got, err := Compress(context.Background(), root, []string{"Docs"}, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "Docs (2).zip" {
+		t.Fatalf("name = %q", got)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, got))
+	files := unzip(t, b)
+	if files["Docs/a.txt"] != "alpha" || files["Docs/sub/b.txt"] != "beta" {
+		t.Fatalf("contents = %v", files)
+	}
+	if read(t, dir, "Docs.zip") != "taken" {
+		t.Fatal("existing zip overwritten")
+	}
+
+	write(t, dir, "x.txt", "x")
+	got, err = Compress(context.Background(), root, []string{"x.txt", "Docs/a.txt"}, "Docs", nil)
+	if err != nil || got != "Docs/Archive.zip" {
+		t.Fatalf("multi: %q %v", got, err)
+	}
+	ents, _ := os.ReadDir(filepath.Join(dir, "Docs"))
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), ".strata-") {
+			t.Fatalf("temp file left: %s", e.Name())
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Compress(ctx, root, []string{"Docs"}, "", nil); err == nil {
+		t.Fatal("canceled compress succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Docs (3).zip")); err == nil {
+		t.Fatal("canceled compress left a zip")
+	}
+}
+
+func TestAtomicFileCommitsOnlyWhole(t *testing.T) {
+	root, dir := share(t)
+	write(t, dir, "doc.txt", "v1")
+
+	a, err := CreateAtomic(root, "doc.txt", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Write([]byte("v2"))
+	if read(t, dir, "doc.txt") != "v1" {
+		t.Fatal("changed before Close")
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, dir, "doc.txt") != "v2" {
+		t.Fatal("not committed")
+	}
+	if vs, _ := ListVersions(root, "doc.txt"); len(vs) != 1 {
+		t.Fatalf("old content not kept: %d versions", len(vs))
+	}
+
+	broken := true
+	a, _ = CreateAtomic(root, "doc.txt", func() bool { return broken })
+	a.Write([]byte("partial"))
+	if err := a.Close(); err == nil || read(t, dir, "doc.txt") != "v2" {
+		t.Fatalf("interrupted write committed: %v", err)
+	}
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), ".strata-") {
+			t.Fatalf("temp file left: %s", e.Name())
+		}
+	}
+
+	if _, err := CreateAtomic(root, "missing/x.txt", nil); err == nil {
+		t.Fatal("wrote into a missing folder")
+	}
+	if _, err := CreateAtomic(root, ".strata/x", nil); err == nil {
+		t.Fatal("wrote into the internal dir")
 	}
 }
