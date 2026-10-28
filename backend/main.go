@@ -30,6 +30,7 @@ import (
 	"golang.org/x/term"
 
 	"strata/internal/auth"
+	"strata/internal/dav"
 	"strata/internal/fileops"
 	"strata/internal/jobs"
 	"strata/internal/preview"
@@ -64,6 +65,8 @@ var (
 	runner = jobs.New(2, time.Hour)
 	sizer  *fileops.Sizer
 	peeks  = preview.NewCache(1000)
+	// Off unless STRATA_WEBDAV=on: a mountable drive is more surface.
+	davEnabled bool
 )
 
 func main() {
@@ -98,8 +101,11 @@ func main() {
 		tlsKey  = flag.String("tls-key", envOr("STRATA_TLS_KEY", ""), "TLS private key (PEM)")
 		// Days a deleted item stays restorable.
 		trashDays = flag.Int("trash-days", envInt("STRATA_TRASH_DAYS", 30), "days to keep deleted items")
+		// Mount the share as a network drive at /dav.
+		webdavMode = flag.String("webdav", envOr("STRATA_WEBDAV", "off"), `"on" to serve the share over WebDAV at /dav`)
 	)
 	flag.Parse()
+	davEnabled = *webdavMode == "on"
 
 	r, err := safepath.NewRoot(*dir)
 	if err != nil {
@@ -340,6 +346,16 @@ func newHandler(name string, hosts []string, gate *auth.Gate) http.Handler {
 	mux.HandleFunc("GET /api/versions/download", handleVersionDownload)
 	mux.HandleFunc("POST /api/versions/restore", handleVersionRestore)
 	mux.HandleFunc("/", handleStatic)
+
+	if davEnabled {
+		var d http.Handler = dav.Handler(root)
+		if gate != nil {
+			d = gate.Basic(d)
+		}
+		mux.Handle(dav.Prefix+"/", d)
+		mux.Handle(dav.Prefix, d)
+		log.Printf("WebDAV on at %s/", dav.Prefix)
+	}
 
 	var h http.Handler = mux
 	if gate != nil {

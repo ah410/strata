@@ -51,7 +51,13 @@ func Guard(next http.Handler, allowed []string) http.Handler {
 		}
 
 		if !safeMethod(r.Method) {
-			if reason := crossSite(r); reason != "" {
+			reason := crossSite(r)
+			// Drive clients can't send the UI's header; WebDAV has its own
+			// check, and its methods need a CORS preflight we never grant.
+			if strings.HasPrefix(r.URL.Path, DavPrefix+"/") || r.URL.Path == DavPrefix {
+				reason = davForged(r)
+			}
+			if reason != "" {
 				log.Printf("blocked %s %s from %s: %s", r.Method, r.URL.Path, r.RemoteAddr, reason)
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
@@ -85,6 +91,29 @@ func crossSite(r *http.Request) string {
 	}
 	// Fetch metadata is set by every current browser and can't be forged by
 	// page script; trust it when present.
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "", "same-origin", "none":
+	default:
+		return "Sec-Fetch-Site " + r.Header.Get("Sec-Fetch-Site")
+	}
+	if o := r.Header.Get("Origin"); o != "" {
+		u, err := url.Parse(o)
+		if err != nil || !strings.EqualFold(u.Host, r.Host) {
+			return "origin " + o + " does not match host " + r.Host
+		}
+	}
+	return ""
+}
+
+// DavPrefix is where the WebDAV mount lives.
+const DavPrefix = "/dav"
+
+// davForged returns why a WebDAV write looks like it came from a web page.
+// Real drive clients send no Origin or fetch metadata; browsers always do.
+func davForged(r *http.Request) string {
+	if r.Method == http.MethodPost {
+		return "POST to WebDAV"
+	}
 	switch r.Header.Get("Sec-Fetch-Site") {
 	case "", "same-origin", "none":
 	default:

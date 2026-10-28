@@ -329,3 +329,46 @@ func TestCompressSavesZipBesideItems(t *testing.T) {
 		t.Fatal("canceled compress left a zip")
 	}
 }
+
+func TestAtomicFileCommitsOnlyWhole(t *testing.T) {
+	root, dir := share(t)
+	write(t, dir, "doc.txt", "v1")
+
+	a, err := CreateAtomic(root, "doc.txt", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Write([]byte("v2"))
+	if read(t, dir, "doc.txt") != "v1" {
+		t.Fatal("changed before Close")
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, dir, "doc.txt") != "v2" {
+		t.Fatal("not committed")
+	}
+	if vs, _ := ListVersions(root, "doc.txt"); len(vs) != 1 {
+		t.Fatalf("old content not kept: %d versions", len(vs))
+	}
+
+	broken := true
+	a, _ = CreateAtomic(root, "doc.txt", func() bool { return broken })
+	a.Write([]byte("partial"))
+	if err := a.Close(); err == nil || read(t, dir, "doc.txt") != "v2" {
+		t.Fatalf("interrupted write committed: %v", err)
+	}
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), ".strata-") {
+			t.Fatalf("temp file left: %s", e.Name())
+		}
+	}
+
+	if _, err := CreateAtomic(root, "missing/x.txt", nil); err == nil {
+		t.Fatal("wrote into a missing folder")
+	}
+	if _, err := CreateAtomic(root, ".strata/x", nil); err == nil {
+		t.Fatal("wrote into the internal dir")
+	}
+}
