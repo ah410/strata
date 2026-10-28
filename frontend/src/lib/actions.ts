@@ -5,7 +5,7 @@ import type { Entry } from "./api";
  * from this list; App supplies what each id does.
  */
 export type ActionId =
-  | "open" | "extract" | "rename" | "history" | "star" | "cut" | "clip" | "pasteInto" | "move" | "copy"
+  | "open" | "extract" | "info" | "rename" | "history" | "star" | "cut" | "clip" | "pasteInto" | "move" | "copy"
   | "download" | "compress" | "delete"
   | "paste" | "newFolder" | "newFile" | "uploadFolder" | "upload" | "layout" | "selectAll" | "refresh";
 
@@ -47,6 +47,7 @@ const allStarred = (c: Ctx) => c.selection.length > 0 && c.selection.every((e) =
 export const ACTIONS: Action[] = [
   { id: "open", label: () => "Open", on: "item", group: 0, when: one, keys: ["Enter"] },
   { id: "extract", label: () => "Extract here", on: "item", group: 0, toolbar: true, when: (c) => oneFile(c) && EXTRACTABLE.test(c.selection[0].name) },
+  { id: "info", label: () => "Info", on: "item", group: 1, when: one, keys: ["Mod+I"] },
   { id: "rename", label: () => "Rename", on: "item", group: 1, toolbar: true, when: one, keys: ["F2"] },
   { id: "history", label: () => "History", on: "item", group: 1, toolbar: true, when: oneFile },
   { id: "star", label: (c) => (allStarred(c) ? "Unstar" : "Star"), on: "item", group: 1, toolbar: true, when: (c) => c.canStar },

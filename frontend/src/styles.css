@@ -1167,3 +1167,13 @@ kbd {
   text-align: center;
 }
 .menu-item kbd { border: 0; background: none; padding: 0; }
+
+.dialog.info { width: min(480px, 100%); }
+.dialog.info h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dialog.info dl { margin: 10px 0 0; }
+.dialog.info dt { color: var(--ink-dim); flex: none; }
+.dialog.info dd { margin: 0; min-width: 0; text-align: right; color: var(--ink); }
+.dialog.info dd small { color: var(--ink-faint); }
+.dialog.info .btn { height: 24px; }
+.sum { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.sum code { overflow-wrap: anywhere; font-family: var(--mono); font-size: 11px; color: var(--ink-dim); text-align: left; }

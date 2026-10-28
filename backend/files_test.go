@@ -190,3 +190,22 @@ func TestCompressOverHTTP(t *testing.T) {
 		}
 	}
 }
+
+func TestInfoAndChecksumOverHTTP(t *testing.T) {
+	h, dir := testServer(t)
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("hello\n"), 0o644)
+	rec := do(h, "GET", "/api/info?path=f.txt", "strata.example.com", "", nil)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"type":"text/plain"`) {
+		t.Fatalf("info: %d %s", rec.Code, rec.Body)
+	}
+	hdr := map[string]string{"Content-Type": "application/json", "X-Strata": "1"}
+	rec = do(h, "POST", "/api/checksum", "strata.example.com", `{"path":"f.txt"}`, hdr)
+	var start struct{ Job string }
+	json.Unmarshal(rec.Body.Bytes(), &start)
+	if j := waitJob(t, h, start.Job); j["result"] != "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03" {
+		t.Fatalf("job = %v", j)
+	}
+	if rec := do(h, "POST", "/api/checksum", "strata.example.com", `{"path":""}`, hdr); rec.Code == 200 {
+		t.Fatal("root checksummed")
+	}
+}

@@ -324,6 +324,8 @@ func newHandler(name string, hosts []string, gate *auth.Gate) http.Handler {
 	mux.HandleFunc("GET /api/zip", handleZip)
 	mux.HandleFunc("POST /api/extract", handleExtract)
 	mux.HandleFunc("POST /api/compress", handleCompress)
+	mux.HandleFunc("GET /api/info", handleInfo)
+	mux.HandleFunc("POST /api/checksum", handleChecksum)
 	mux.HandleFunc("GET /api/jobs/{id}", handleJob)
 	mux.HandleFunc("DELETE /api/jobs/{id}", handleJobCancel)
 	mux.HandleFunc("POST /api/mkdir", handleMkdir)
@@ -918,6 +920,38 @@ func handleCompress(w http.ResponseWriter, r *http.Request) {
 	}
 	id := runner.Start("compress", func(ctx context.Context, report jobs.Progress) (any, error) {
 		return fileops.Compress(ctx, root, paths, req.Dir, report)
+	})
+	writeJSON(w, map[string]any{"job": id})
+}
+
+func handleInfo(w http.ResponseWriter, r *http.Request) {
+	in, err := fileops.Describe(root, r.URL.Query().Get("path"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, in)
+}
+
+// handleChecksum hashes a file as a job; a large video takes a while.
+func handleChecksum(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	e, err := fileops.Stat(root, req.Path)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if e.IsDir {
+		fail(w, userr.Error("only files have a checksum"))
+		return
+	}
+	id := runner.Start("checksum", func(ctx context.Context, report jobs.Progress) (any, error) {
+		return fileops.Checksum(ctx, root, e.Path, report)
 	})
 	writeJSON(w, map[string]any{"job": id})
 }

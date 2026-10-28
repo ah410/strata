@@ -15,6 +15,7 @@ import { TextEditor } from "./components/TextEditor";
 import { actionForKey, actionsFor, type ActionId, type Ctx } from "./lib/actions";
 import { combo, display, step, typeahead, TYPEAHEAD_MS } from "./lib/keys";
 import { ContextMenu } from "./components/ContextMenu";
+import { InfoDialog } from "./components/Info";
 import { follow } from "./lib/jobs";
 import { box, overlaps, range, type Box } from "./lib/selection";
 
@@ -49,6 +50,8 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [appearanceOpen, setAppearanceOpen] = useState<false | "top" | "shortcuts">(false);
   const [historyPath, setHistoryPath] = useState<string | null>(null);
   const closeHistory = useCallback(() => setHistoryPath(null), []);
+  const [infoPath, setInfoPath] = useState<string | null>(null);
+  const closeInfo = useCallback(() => setInfoPath(null), []);
   const noteTimer = useRef<number>();
   const [query, setQuery] = useState("");
   const [found, setFound] = useState<SearchResult | null>(null);
@@ -498,6 +501,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     switch (id) {
       case "open": return sel[0] && activate(sel[0]);
       case "extract": return sel[0] && extract(sel[0]);
+      case "info": return sel[0] && setInfoPath(sel[0].path);
       case "rename": return sel[0] && rename(sel[0].path);
       case "history": return sel[0] && setHistoryPath(sel[0].path);
       case "star": return star(paths);
@@ -929,6 +933,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       )}
 
       {appearanceOpen && <AppearanceDialog start={appearanceOpen} onClose={() => setAppearanceOpen(false)} />}
+      {infoPath && <InfoDialog path={infoPath} onClose={closeInfo} onNavigate={navigate} />}
       {historyPath && <History path={historyPath} onClose={closeHistory} onRestored={() => { toast("Version restored"); refresh(); }} />}
 
       {prompt && (

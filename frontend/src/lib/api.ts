@@ -97,6 +97,13 @@ export interface DocPeek {
   slides?: number;
 }
 
+export interface FileInfo extends Entry {
+  type?: string;
+  items?: number;
+  width?: number;
+  height?: number;
+}
+
 export interface CellStyle {
   bold?: boolean;
   italic?: boolean;
@@ -323,6 +330,16 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ paths, dir }),
+    }).then((r) => r.job),
+
+  info: (path: string) => req<FileInfo>(`/api/info?path=${q(path)}`),
+
+  /** Starts hashing a file; resolves to the job id. */
+  checksum: (path: string) =>
+    req<{ job: string }>("/api/checksum", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
     }).then((r) => r.job),
 
   job: <R>(id: string) => req<Job<R>>(`/api/jobs/${q(id)}`),
