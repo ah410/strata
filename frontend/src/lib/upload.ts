@@ -216,3 +216,18 @@ async function walk(entry: FileSystemEntry, prefix: string): Promise<UploadItem[
 export function fromInput(files: FileList): UploadItem[] {
   return Array.from(files).map((file) => ({ file, rel: file.webkitRelativePath || file.name }));
 }
+
+/**
+ * Upload names for pasted files. Browsers call every pasted screenshot
+ * "image.png", so those get a timestamp; real file names are kept.
+ */
+export function fromPaste(files: File[], now = new Date()): UploadItem[] {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}.${pad(now.getMinutes())}.${pad(now.getSeconds())}`;
+  return files.map((file, i) => {
+    const m = /^image\.(\w+)$/i.exec(file.name);
+    if (!m) return { file, rel: file.name };
+    const n = files.length > 1 ? ` (${i + 1})` : "";
+    return { file, rel: `Pasted image ${stamp}${n}.${m[1].toLowerCase()}` };
+  });
+}

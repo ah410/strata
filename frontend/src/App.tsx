@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, type AppState, type Entry, type Listing, type SearchResult } from "./lib/api";
-import { fromDrop, fromInput, uploadAll, type UploadItem } from "./lib/upload";
+import { fromDrop, fromInput, fromPaste, uploadAll, type UploadItem } from "./lib/upload";
 import { bytes, freeCopyName, joinPath, parentOf, when } from "./lib/format";
 import { Capacity } from "./components/Capacity";
 import { Glyph } from "./components/Glyph";
@@ -601,8 +601,21 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
         if (i >= 0) moveTo(i, { shiftKey: false, ctrlKey: false, metaKey: false });
       }
     };
+    // Pasting files or a screenshot uploads them here.
+    const onPaste = (e: ClipboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (view !== "files" || t.closest?.("input, textarea, [contenteditable=true]") || document.querySelector(".scrim, .overlay")) return;
+      const files = [...(e.clipboardData?.files ?? [])];
+      if (!files.length) return;
+      e.preventDefault();
+      upload(fromPaste(files));
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("paste", onPaste);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("paste", onPaste);
+    };
   });
 
   return (
