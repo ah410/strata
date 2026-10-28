@@ -677,9 +677,9 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
             aria-label="Settings"
             title="Settings"
           >
-            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.4">
-              <circle cx="8" cy="8" r="2.2" />
-              <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" strokeLinecap="round" />
+            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round">
+              <path d="M12.85 6.79 L14.51 6.92 L14.51 9.08 L12.85 9.21 L12.29 10.58 L13.37 11.84 L11.84 13.37 L10.58 12.29 L9.21 12.85 L9.08 14.51 L6.92 14.51 L6.79 12.85 L5.42 12.29 L4.16 13.37 L2.63 11.84 L3.71 10.58 L3.15 9.21 L1.49 9.08 L1.49 6.92 L3.15 6.79 L3.71 5.42 L2.63 4.16 L4.16 2.63 L5.42 3.71 L6.79 3.15 L6.92 1.49 L9.08 1.49 L9.21 3.15 L10.58 3.71 L11.84 2.63 L13.37 4.16 L12.29 5.42Z" />
+              <circle cx="8" cy="8" r="2" />
             </svg>
           </button>
           {onSignOut && (
