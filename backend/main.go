@@ -323,6 +323,7 @@ func newHandler(name string, hosts []string, gate *auth.Gate) http.Handler {
 	mux.HandleFunc("GET /api/search", handleSearch)
 	mux.HandleFunc("GET /api/zip", handleZip)
 	mux.HandleFunc("POST /api/extract", handleExtract)
+	mux.HandleFunc("POST /api/compress", handleCompress)
 	mux.HandleFunc("GET /api/jobs/{id}", handleJob)
 	mux.HandleFunc("DELETE /api/jobs/{id}", handleJobCancel)
 	mux.HandleFunc("POST /api/mkdir", handleMkdir)
@@ -893,6 +894,30 @@ func handleExtract(w http.ResponseWriter, r *http.Request) {
 	}
 	id := runner.Start("extract", func(ctx context.Context, report jobs.Progress) (any, error) {
 		return fileops.Extract(ctx, root, rel, extractLimits(), report)
+	})
+	writeJSON(w, map[string]any{"job": id})
+}
+
+// handleCompress saves a selection as a zip in a folder on the share.
+func handleCompress(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Paths []string `json:"paths"`
+		Dir   string   `json:"dir"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	paths, err := fileops.ZipCheck(root, req.Paths)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if _, err := fileops.List(root, req.Dir); err != nil {
+		fail(w, err)
+		return
+	}
+	id := runner.Start("compress", func(ctx context.Context, report jobs.Progress) (any, error) {
+		return fileops.Compress(ctx, root, paths, req.Dir, report)
 	})
 	writeJSON(w, map[string]any{"job": id})
 }

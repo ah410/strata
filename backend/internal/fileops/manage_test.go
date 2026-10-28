@@ -286,3 +286,46 @@ func TestTextSaveDetectsConflicts(t *testing.T) {
 		}
 	}
 }
+
+func TestCompressSavesZipBesideItems(t *testing.T) {
+	root, dir := share(t)
+	write(t, dir, "Docs/a.txt", "alpha")
+	write(t, dir, "Docs/sub/b.txt", "beta")
+	write(t, dir, "Docs.zip", "taken")
+	got, err := Compress(context.Background(), root, []string{"Docs"}, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "Docs (2).zip" {
+		t.Fatalf("name = %q", got)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, got))
+	files := unzip(t, b)
+	if files["Docs/a.txt"] != "alpha" || files["Docs/sub/b.txt"] != "beta" {
+		t.Fatalf("contents = %v", files)
+	}
+	if read(t, dir, "Docs.zip") != "taken" {
+		t.Fatal("existing zip overwritten")
+	}
+
+	write(t, dir, "x.txt", "x")
+	got, err = Compress(context.Background(), root, []string{"x.txt", "Docs/a.txt"}, "Docs", nil)
+	if err != nil || got != "Docs/Archive.zip" {
+		t.Fatalf("multi: %q %v", got, err)
+	}
+	ents, _ := os.ReadDir(filepath.Join(dir, "Docs"))
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), ".strata-") {
+			t.Fatalf("temp file left: %s", e.Name())
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Compress(ctx, root, []string{"Docs"}, "", nil); err == nil {
+		t.Fatal("canceled compress succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Docs (3).zip")); err == nil {
+		t.Fatal("canceled compress left a zip")
+	}
+}

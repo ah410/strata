@@ -508,6 +508,10 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       case "pasteInto": return sel[0] && paste(sel[0].path);
       case "move": case "copy": return setPicker({ mode: id, items: sel });
       case "download": return download(sel);
+      case "compress":
+        toast(`Compressing ${plural(sel.length, "item")}…`);
+        return runJob<string>(api.compress(paths, searchMode ? parentOf(paths[0]) : path), (zip) =>
+          toast(`Saved ${zip.split("/").pop()}`));
       case "delete": return remove(paths);
       case "layout": return setLayout(layout === "list" ? "grid" : "list");
       case "newFolder": return newFolder();

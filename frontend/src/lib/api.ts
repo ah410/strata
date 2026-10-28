@@ -317,6 +317,14 @@ export const api = {
       body: JSON.stringify({ path }),
     }).then((r) => r.job),
 
+  /** Starts zipping paths into dir on the share; resolves to the job id. */
+  compress: (paths: string[], dir: string) =>
+    req<{ job: string }>("/api/compress", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths, dir }),
+    }).then((r) => r.job),
+
   job: <R>(id: string) => req<Job<R>>(`/api/jobs/${q(id)}`),
   cancelJob: (id: string) => fetch(`/api/jobs/${q(id)}`, { method: "DELETE", headers: GUARD }),
 

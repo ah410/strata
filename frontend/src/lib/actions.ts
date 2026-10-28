@@ -6,7 +6,7 @@ import type { Entry } from "./api";
  */
 export type ActionId =
   | "open" | "extract" | "rename" | "history" | "star" | "cut" | "clip" | "pasteInto" | "move" | "copy"
-  | "download" | "delete"
+  | "download" | "compress" | "delete"
   | "paste" | "newFolder" | "newFile" | "uploadFolder" | "upload" | "layout" | "selectAll" | "refresh";
 
 export interface Ctx {
@@ -56,6 +56,7 @@ export const ACTIONS: Action[] = [
   { id: "move", label: () => "Move to…", on: "item", group: 2, toolbar: true },
   { id: "copy", label: () => "Copy to…", on: "item", group: 2, toolbar: true },
   { id: "download", label: () => "Download", on: "item", group: 3, toolbar: true },
+  { id: "compress", label: () => "Compress to zip", on: "item", group: 3 },
   { id: "delete", label: () => "Delete", on: "item", group: 4, toolbar: true, danger: true, keys: ["Delete", "Mod+Backspace"] },
 
   { id: "paste", label: (c) => `Paste ${count(c.clipboard)}`, on: "space", group: 0, when: (c) => c.clipboard > 0, keys: ["Mod+V"], name: "Paste" },

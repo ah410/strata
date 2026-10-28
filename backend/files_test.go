@@ -169,3 +169,24 @@ func TestPreviewOverHTTP(t *testing.T) {
 		t.Fatalf("internal: %d", rec.Code)
 	}
 }
+
+func TestCompressOverHTTP(t *testing.T) {
+	h, dir := testServer(t)
+	os.MkdirAll(filepath.Join(dir, "a"), 0o755)
+	os.WriteFile(filepath.Join(dir, "a/f.txt"), []byte("f"), 0o644)
+	hdr := map[string]string{"Content-Type": "application/json", "X-Strata": "1"}
+	rec := do(h, "POST", "/api/compress", "strata.example.com", `{"paths":["a"],"dir":""}`, hdr)
+	if rec.Code != 200 {
+		t.Fatalf("compress: %d %s", rec.Code, rec.Body)
+	}
+	var start struct{ Job string }
+	json.Unmarshal(rec.Body.Bytes(), &start)
+	if j := waitJob(t, h, start.Job); j["state"] != "done" || j["result"] != "a.zip" {
+		t.Fatalf("job = %v", j)
+	}
+	for _, body := range []string{`{"paths":[],"dir":""}`, `{"paths":["a"],"dir":"a/f.txt"}`, `{"paths":["a"],"dir":".strata"}`, `{"paths":["../a"],"dir":"nope"}`} {
+		if rec := do(h, "POST", "/api/compress", "strata.example.com", body, hdr); rec.Code == 200 {
+			t.Errorf("%s accepted", body)
+		}
+	}
+}
