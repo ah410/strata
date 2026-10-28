@@ -16,6 +16,7 @@ import { actionForKey, actionsFor, type ActionId, type Ctx } from "./lib/actions
 import { combo, display, step, typeahead, TYPEAHEAD_MS } from "./lib/keys";
 import { ContextMenu } from "./components/ContextMenu";
 import { InfoDialog } from "./components/Info";
+import { Palette, type Command } from "./components/Palette";
 import { follow } from "./lib/jobs";
 import { box, overlaps, range, type Box } from "./lib/selection";
 
@@ -51,6 +52,9 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [historyPath, setHistoryPath] = useState<string | null>(null);
   const closeHistory = useCallback(() => setHistoryPath(null), []);
   const [infoPath, setInfoPath] = useState<string | null>(null);
+  const [palette, setPalette] = useState(false);
+  // A path to select once its folder's listing arrives.
+  const reveal = useRef<string | null>(null);
   const closeInfo = useCallback(() => setInfoPath(null), []);
   const noteTimer = useRef<number>();
   const [query, setQuery] = useState("");
@@ -88,7 +92,13 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       (l) => {
         setListing(l);
         setError(null);
-        setPicked(new Set());
+        const r = reveal.current;
+        reveal.current = null;
+        setPicked(new Set(r ? [r] : []));
+        if (r) {
+          setCursor(r);
+          requestAnimationFrame(() => document.querySelector(`.listing [data-path="${CSS.escape(r)}"]`)?.scrollIntoView({ block: "center" }));
+        }
       },
       (e: Error) => {
         setError(e.message);
@@ -527,6 +537,32 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     }
   };
 
+  // What the palette offers besides file names: actions for the current
+  // selection or folder, then places to go.
+  const commands = (): Command[] => {
+    const sel = pickedEntries;
+    const acts = [...actionsFor(ctx(sel), "menu"), ...(sel.length ? actionsFor(ctx([]), "menu") : [])];
+    return [
+      ...acts.map((a) => {
+        const c = a.on === "item" ? ctx(sel) : ctx([]);
+        return {
+          id: "act:" + a.id + a.on,
+          label: a.on === "item" && sel.length > 1 ? `${a.label(c)} ${plural(sel.length, "item")}` : a.on === "item" ? `${a.label(c)}: ${sel[0].name}` : a.label(c),
+          hint: a.keys && display(a.keys[0]),
+          section: "Actions",
+          run: () => perform(a.id, a.on === "item" ? sel : []),
+        };
+      }),
+      { id: "go:all", label: "All files", section: "Go to", run: () => navigate("") },
+      ...(path ? [{ id: "go:up", label: "Parent folder", section: "Go to", run: () => navigate(parentOf(path)) }] : []),
+      { id: "go:recent", label: "Recent files", section: "Go to", run: () => setView("recent") },
+      { id: "go:trash", label: "Trash", section: "Go to", run: () => setView("trash") },
+      { id: "go:settings", label: "Settings", section: "Go to", run: () => setAppearanceOpen("top") },
+      { id: "go:keys", label: "Keyboard shortcuts", hint: "?", section: "Go to", run: () => setAppearanceOpen("shortcuts") },
+      ...(saved?.favorites ?? []).map((f) => ({ id: "fav:" + f.path, label: f.name, hint: "★", section: "Favorites", run: () => activate(f) })),
+    ];
+  };
+
   // Moves the keyboard cursor to rows[i], selecting as a click would.
   const moveTo = (i: number, mods: Mods) => {
     const e = rows[i];
@@ -545,6 +581,11 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
+      // The palette opens from anywhere, even the search box.
+      if (combo(e) === "Mod+K" && !document.querySelector(".scrim, .overlay")) {
+        e.preventDefault();
+        return setPalette(true);
+      }
       if (view !== "files" || e.defaultPrevented) return;
       if (t.closest?.("input:not([type=checkbox]), textarea, select, [contenteditable=true]")) return;
       if (document.querySelector(".scrim, .overlay, .menu")) return;
@@ -946,6 +987,18 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       )}
 
       {appearanceOpen && <AppearanceDialog start={appearanceOpen} onClose={() => setAppearanceOpen(false)} />}
+      {palette && (
+        <Palette
+          commands={commands()}
+          onClose={() => setPalette(false)}
+          onReveal={(e) => {
+            if (e.isDir) return navigate(e.path);
+            reveal.current = e.path;
+            if (parentOf(e.path) === path && view === "files") refresh();
+            else navigate(parentOf(e.path));
+          }}
+        />
+      )}
       {infoPath && <InfoDialog path={infoPath} onClose={closeInfo} onNavigate={navigate} />}
       {historyPath && <History path={historyPath} onClose={closeHistory} onRestored={() => { toast("Version restored"); refresh(); }} />}
 
