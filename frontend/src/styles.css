@@ -1143,3 +1143,5 @@ button.capacity:focus-visible { outline: 1px solid var(--select); outline-offset
   background: var(--select-bg);
   pointer-events: none;
 }
+
+[data-cut] { opacity: 0.5; }

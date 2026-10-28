@@ -5,7 +5,7 @@ import type { Entry } from "./api";
 const file = (path: string): Entry => ({ name: path.split("/").pop()!, path, isDir: false, size: 1, modified: "", kind: "file" });
 const dir = (path: string): Entry => ({ ...file(path), isDir: true, kind: "folder" });
 const ctx = (selection: Entry[], over: Partial<Ctx> = {}): Ctx => ({
-  selection, canStar: true, favorites: new Set(), layout: "list", ...over,
+  selection, canStar: true, favorites: new Set(), layout: "list", clipboard: 0, ...over,
 });
 const ids = (c: Ctx, where: "toolbar" | "menu" = "menu") => actionsFor(c, where).map((a) => a.id);
 
@@ -37,6 +37,14 @@ describe("actionsFor", () => {
     expect(ids(ctx([file("b.TAR.GZ")]))).toContain("extract");
     expect(ids(ctx([file("c.7z")]))).not.toContain("extract");
     expect(ids(ctx([file("a.zip"), file("b.zip")]))).not.toContain("extract");
+  });
+
+  it("offers paste only with something on the clipboard", () => {
+    expect(ids(ctx([]))).not.toContain("paste");
+    const c = ctx([], { clipboard: 2 });
+    expect(actionsFor(c, "menu")[0].label(c)).toBe("Paste 2 items");
+    expect(ids(ctx([dir("d")], { clipboard: 1 }))).toContain("pasteInto");
+    expect(ids(ctx([file("f")], { clipboard: 1 }))).not.toContain("pasteInto");
   });
 
   it("keeps menu-only actions out of the toolbar", () => {

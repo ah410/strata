@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, type AppState, type Entry, type Listing, type SearchResult } from "./lib/api";
 import { fromDrop, fromInput, uploadAll, type UploadItem } from "./lib/upload";
-import { bytes, joinPath, parentOf, when } from "./lib/format";
+import { bytes, freeCopyName, joinPath, parentOf, when } from "./lib/format";
 import { Capacity } from "./components/Capacity";
 import { Glyph } from "./components/Glyph";
 import { Preview, canPreview } from "./components/Preview";
@@ -57,6 +57,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [menu, setMenu] = useState<null | { x: number; y: number; sel: Entry[] }>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
   const anchor = useRef<string | null>(null);
+  const [clip, setClip] = useState<null | { cut: boolean; items: Entry[] }>(null);
   const [marquee, setMarquee] = useState<Box | null>(null);
 
   const loadSaved = useCallback(() => { api.state().then(setSaved, () => undefined); }, []);
@@ -368,6 +369,33 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       toast(`Extracted to ${dest.split("/").pop()}`, false, { label: "Open", run: () => navigate(dest) }));
   };
 
+  // Pastes the clipboard into dest. Names that are taken get " (copy)",
+  // so pasting into the same folder duplicates instead of failing.
+  const paste = async (dest: string) => {
+    if (!clip) return;
+    const taken = new Set((dest === path && listing ? listing.entries : (await api.list(dest).catch(() => null))?.entries ?? []).map((e) => e.name));
+    let ok = 0;
+    for (const { path: p, isDir } of clip.items) {
+      if (dest === p || dest.startsWith(p + "/")) {
+        toast(`Can't paste a folder into itself`, true);
+        continue;
+      }
+      if (clip.cut && parentOf(p) === dest) continue;
+      const name = freeCopyName(p.split("/").pop()!, taken, isDir);
+      try {
+        await (clip.cut ? api.move(p, joinPath(dest, name)) : api.copy(p, joinPath(dest, name)));
+        taken.add(name);
+        ok++;
+      } catch (e) {
+        toast(`${p.split("/").pop()}: ${(e as Error).message}`, true);
+      }
+    }
+    if (ok) toast(`${clip.cut ? "Moved" : "Copied"} ${plural(ok, "item")} to /${dest}`);
+    if (clip.cut) setClip(null);
+    refresh();
+    if (clip.cut) loadSaved();
+  };
+
   const download = (sel: Entry[]) => {
     if (sel.length === 1 && !sel[0].isDir) window.location.href = api.downloadUrl(sel[0].path);
     else if (sel.length) window.location.href = api.zipUrl(sel.map((e) => e.path));
@@ -378,6 +406,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const rowProps = (e: Entry) => ({
     draggable: true,
     "data-path": e.path,
+    "data-cut": clip?.cut && clip.items.some((c) => c.path === e.path) ? "" : undefined,
     onClick: (ev: React.MouseEvent) => {
       if (!(ev.target as Element).closest("button, input, a")) pick(e.path, ev);
     },
@@ -454,7 +483,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       },
     });
 
-  const ctx = (selection: Entry[]): Ctx => ({ selection, canStar: !!saved?.enabled, favorites, layout });
+  const ctx = (selection: Entry[]): Ctx => ({ selection, canStar: !!saved?.enabled, favorites, layout, clipboard: clip?.items.length ?? 0 });
 
   // What each registry action does, applied to an explicit selection.
   const perform = (id: ActionId, sel: Entry[]) => {
@@ -465,6 +494,11 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       case "rename": return sel[0] && rename(sel[0].path);
       case "history": return sel[0] && setHistoryPath(sel[0].path);
       case "star": return star(paths);
+      case "cut": case "clip":
+        setClip({ cut: id === "cut", items: sel });
+        return toast(`${id === "cut" ? "Cut" : "Copied"} ${plural(paths.length, "item")}. Paste in another folder.`);
+      case "paste": return paste(path);
+      case "pasteInto": return sel[0] && paste(sel[0].path);
       case "move": case "copy": return setPicker({ mode: id, items: sel });
       case "download": return download(sel);
       case "delete": return remove(paths);

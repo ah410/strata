@@ -5,8 +5,9 @@ import type { Entry } from "./api";
  * from this list; App supplies what each id does.
  */
 export type ActionId =
-  | "open" | "extract" | "rename" | "history" | "star" | "move" | "copy" | "download" | "delete"
-  | "newFolder" | "newFile" | "uploadFolder" | "upload" | "layout" | "selectAll" | "refresh";
+  | "open" | "extract" | "rename" | "history" | "star" | "cut" | "clip" | "pasteInto" | "move" | "copy"
+  | "download" | "delete"
+  | "paste" | "newFolder" | "newFile" | "uploadFolder" | "upload" | "layout" | "selectAll" | "refresh";
 
 export interface Ctx {
   /** What the action applies to; empty for the folder background. */
@@ -15,6 +16,8 @@ export interface Ctx {
   canStar: boolean;
   favorites: Set<string>;
   layout: "list" | "grid";
+  /** Items waiting on the clipboard. */
+  clipboard: number;
 }
 
 export interface Action {
@@ -34,6 +37,7 @@ const one = (c: Ctx) => c.selection.length === 1;
 const oneFile = (c: Ctx) => one(c) && !c.selection[0].isDir;
 /** Archive formats the server can unpack. */
 export const EXTRACTABLE = /\.(zip|tar|tar\.gz|tgz)$/i;
+const count = (n: number) => `${n} item${n === 1 ? "" : "s"}`;
 const allStarred = (c: Ctx) => c.selection.length > 0 && c.selection.every((e) => c.favorites.has(e.path));
 
 export const ACTIONS: Action[] = [
@@ -42,11 +46,15 @@ export const ACTIONS: Action[] = [
   { id: "rename", label: () => "Rename", on: "item", group: 1, toolbar: true, when: one },
   { id: "history", label: () => "History", on: "item", group: 1, toolbar: true, when: oneFile },
   { id: "star", label: (c) => (allStarred(c) ? "Unstar" : "Star"), on: "item", group: 1, toolbar: true, when: (c) => c.canStar },
-  { id: "move", label: () => "Move", on: "item", group: 2, toolbar: true },
-  { id: "copy", label: () => "Copy", on: "item", group: 2, toolbar: true },
+  { id: "cut", label: () => "Cut", on: "item", group: 2 },
+  { id: "clip", label: () => "Copy", on: "item", group: 2 },
+  { id: "pasteInto", label: (c) => `Paste ${count(c.clipboard)} into folder`, on: "item", group: 2, when: (c) => c.clipboard > 0 && one(c) && c.selection[0].isDir },
+  { id: "move", label: () => "Move to…", on: "item", group: 2, toolbar: true },
+  { id: "copy", label: () => "Copy to…", on: "item", group: 2, toolbar: true },
   { id: "download", label: () => "Download", on: "item", group: 3, toolbar: true },
   { id: "delete", label: () => "Delete", on: "item", group: 4, toolbar: true, danger: true },
 
+  { id: "paste", label: (c) => `Paste ${count(c.clipboard)}`, on: "space", group: 0, when: (c) => c.clipboard > 0 },
   { id: "layout", label: (c) => (c.layout === "list" ? "Show as grid" : "Show as list"), on: "space", group: 0, toolbar: true },
   { id: "newFolder", label: () => "New folder", on: "space", group: 1, toolbar: true },
   { id: "newFile", label: () => "New file", on: "space", group: 1, toolbar: true },

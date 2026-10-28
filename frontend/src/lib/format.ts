@@ -52,3 +52,14 @@ export function colName(n: number): string {
   }
   return s;
 }
+
+/** name, or "name (copy)", "name (copy 2)", ... before the extension, whichever isn't taken. */
+export function freeCopyName(name: string, taken: Set<string>, isDir = false): string {
+  if (!taken.has(name)) return name;
+  const dot = isDir ? -1 : name.lastIndexOf(".");
+  const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+  for (let n = 1; ; n++) {
+    const cand = `${stem} (copy${n > 1 ? ` ${n}` : ""})${ext}`;
+    if (!taken.has(cand)) return cand;
+  }
+}

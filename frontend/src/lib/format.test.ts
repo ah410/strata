@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bytes, colName, joinPath, parentOf } from "./format";
+import { bytes, colName, freeCopyName, joinPath, parentOf } from "./format";
 
 describe("bytes", () => {
   it("keeps decimals only where they matter", () => {
@@ -25,5 +25,18 @@ describe("colName", () => {
     expect(colName(1)).toBe("A");
     expect(colName(26)).toBe("Z");
     expect(colName(27)).toBe("AA");
+  });
+});
+
+describe("freeCopyName", () => {
+  it("keeps a free name and numbers copies before the extension", () => {
+    expect(freeCopyName("a.txt", new Set())).toBe("a.txt");
+    expect(freeCopyName("a.txt", new Set(["a.txt"]))).toBe("a (copy).txt");
+    expect(freeCopyName("a.txt", new Set(["a.txt", "a (copy).txt"]))).toBe("a (copy 2).txt");
+  });
+
+  it("treats folder names and dotfiles as having no extension", () => {
+    expect(freeCopyName("v1.2", new Set(["v1.2"]), true)).toBe("v1.2 (copy)");
+    expect(freeCopyName(".env", new Set([".env"]))).toBe(".env (copy)");
   });
 });
