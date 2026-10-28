@@ -3,12 +3,14 @@ import {
   SCOPES, THEMES, THEME_IDS, setAppearance, setScopeTheme, useAppearance,
   type Scope, type ThemeId,
 } from "../lib/themes";
+import { setPref, usePrefs } from "../lib/prefs";
 
 const LIGHT = THEME_IDS.filter((id) => !THEMES[id].dark);
 const DARK = THEME_IDS.filter((id) => THEMES[id].dark);
 
 export function AppearanceDialog({ onClose }: { onClose: () => void }) {
   const { appearance } = useAppearance();
+  const prefs = usePrefs();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -18,8 +20,17 @@ export function AppearanceDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="dialog wide" role="dialog" aria-modal="true" aria-label="Appearance">
-        <h3>Appearance</h3>
+      <div className="dialog wide" role="dialog" aria-modal="true" aria-label="Settings">
+        <h3>Settings</h3>
+
+        <h4>Grid view</h4>
+        <label className="field-row toggle">
+          <span>
+            Show document previews
+            <small>PDFs, Word, Excel, PowerPoint and text files show their first page instead of an icon.</small>
+          </span>
+          <input type="checkbox" role="switch" checked={prefs.previews} onChange={(e) => setPref("previews", e.target.checked)} />
+        </label>
 
         <h4>Theme</h4>
         <div className="theme-grid">
@@ -74,7 +85,7 @@ export function AppearanceDialog({ onClose }: { onClose: () => void }) {
           </div>
         ))}
         <p className="hint">
-          Saved in this browser. PDFs use the browser's own viewer, so only the frame around them changes.
+          Settings are saved in this browser. PDFs use the browser's own viewer, so only the frame around them changes.
         </p>
 
         <div className="dialog-actions" style={{ marginTop: 14 }}>

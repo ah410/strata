@@ -32,6 +32,7 @@ import (
 	"strata/internal/auth"
 	"strata/internal/fileops"
 	"strata/internal/jobs"
+	"strata/internal/preview"
 	"strata/internal/safepath"
 	"strata/internal/sheet"
 	"strata/internal/state"
@@ -62,6 +63,7 @@ var (
 	// Two at a time: extracts and scans are disk-bound, more just thrash.
 	runner = jobs.New(2, time.Hour)
 	sizer  *fileops.Sizer
+	peeks  = preview.NewCache(1000)
 )
 
 func main() {
@@ -306,6 +308,7 @@ func newHandler(name string, hosts []string, gate *auth.Gate) http.Handler {
 	mux.HandleFunc("GET /api/text", handleText)
 	mux.HandleFunc("POST /api/text", handleTextWrite)
 	mux.HandleFunc("GET /api/thumb", handleThumb)
+	mux.HandleFunc("GET /api/preview", handlePreview)
 	mux.HandleFunc("GET /api/state", handleState)
 	mux.HandleFunc("POST /api/favorite", handleFavorite)
 	mux.HandleFunc("POST /api/recent", handleRecent)
@@ -580,6 +583,22 @@ func handleThumb(w http.ResponseWriter, r *http.Request) {
 	// The URL carries the mtime, so a changed file gets a new URL.
 	w.Header().Set("Cache-Control", "private, max-age=604800")
 	w.Write(b)
+}
+
+// handlePreview returns a document's text peek for its grid card.
+func handlePreview(w http.ResponseWriter, r *http.Request) {
+	p, err := peeks.Get(root, r.URL.Query().Get("path"))
+	if errors.Is(err, preview.ErrUnsupported) {
+		http.Error(w, err.Error(), http.StatusUnsupportedMediaType)
+		return
+	}
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	// The URL carries the mtime, so a changed file gets a new URL.
+	w.Header().Set("Cache-Control", "private, max-age=604800")
+	writeJSON(w, p)
 }
 
 // handleState returns favorites and recent files that still exist.

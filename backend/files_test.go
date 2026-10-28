@@ -153,3 +153,19 @@ func TestExtractOverHTTP(t *testing.T) {
 		t.Errorf("unknown job: %d", rec.Code)
 	}
 }
+
+func TestPreviewOverHTTP(t *testing.T) {
+	h, dir := testServer(t)
+	os.WriteFile(filepath.Join(dir, "n.md"), []byte("# hi\nthere"), 0o644)
+	os.WriteFile(filepath.Join(dir, "p.bin"), []byte("x"), 0o644)
+	rec := do(h, "GET", "/api/preview?path=n.md&m=1", "strata.example.com", "", nil)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"lines":["# hi","there"]`) {
+		t.Fatalf("preview: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(h, "GET", "/api/preview?path=p.bin", "strata.example.com", "", nil); rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("unsupported: %d", rec.Code)
+	}
+	if rec := do(h, "GET", "/api/preview?path=.strata/x.md", "strata.example.com", "", nil); rec.Code != http.StatusForbidden {
+		t.Fatalf("internal: %d", rec.Code)
+	}
+}

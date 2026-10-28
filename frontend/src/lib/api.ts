@@ -89,6 +89,14 @@ export interface SizeReport {
   versions: number;
 }
 
+export interface DocPeek {
+  type: "text" | "table" | "doc" | "slides";
+  lines?: string[];
+  rows?: string[][];
+  blocks?: { text: string; heading?: boolean }[];
+  slides?: number;
+}
+
 export interface CellStyle {
   bold?: boolean;
   italic?: boolean;
@@ -209,6 +217,9 @@ export const api = {
 
   /** The mtime in the URL means a changed image gets a fresh thumbnail. */
   thumbUrl: (e: Entry) => `/api/thumb?path=${q(e.path)}&m=${q(e.modified)}`,
+
+  /** A document's text peek for its grid card; the mtime keys the cache. */
+  peek: (e: Entry) => req<DocPeek>(`/api/preview?path=${q(e.path)}&m=${q(e.modified)}`),
 
   state: () => req<AppState>("/api/state"),
 

@@ -1091,3 +1091,47 @@ button.capacity:focus-visible { outline: 1px solid var(--select); outline-offset
 .bar-track { height: 6px; border-radius: 3px; background: var(--line-soft); overflow: hidden; }
 .bar-fill { display: block; height: 100%; border-radius: 3px; background: var(--ink-dim); }
 .bar-size { font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); text-align: right; }
+
+/* ─── document previews (grid) ──────────────────────────────────────────── */
+.peek {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--surface);
+  color: var(--ink-dim);
+  text-align: left;
+  font-size: 7.5px;
+  line-height: 1.35;
+  pointer-events: none;
+}
+.peek-pdf img { width: 100%; height: auto; object-fit: initial; background: #fff; }
+.peek pre { margin: 0; padding: 8px; font-family: var(--mono); font-size: 7px; white-space: pre; }
+.peek table { border-collapse: collapse; width: 100%; font-size: 7px; }
+.peek td {
+  max-width: 60px;
+  padding: 2px 4px;
+  border: 1px solid var(--line);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.peek tr:first-child td { color: var(--ink); font-weight: 600; }
+.peek-page { padding: 9px 10px; }
+.peek-page strong { display: block; margin-bottom: 4px; color: var(--ink); font-size: 9px; line-height: 1.25; }
+.peek-page p { margin: 0 0 4px; }
+.peek-slides { display: grid; place-items: center; }
+.peek-slides .peek-page {
+  position: relative;
+  width: 88%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.peek-slides .peek-page strong { font-size: 10px; }
+.peek-count { position: absolute; right: 5px; bottom: 3px; font-size: 7px; color: var(--ink-faint); }
+
+.field-row.toggle { cursor: pointer; gap: 16px; }
+.field-row.toggle small { display: block; margin-top: 2px; color: var(--ink-faint); font-size: 11.5px; }
+.field-row.toggle input { flex: none; width: 16px; height: 16px; accent-color: var(--select); }

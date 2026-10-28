@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { api, type Entry } from "../lib/api";
 import { Glyph } from "./Glyph";
+import { DocPreview, PEEKABLE } from "./DocPreview";
+import { usePrefs } from "../lib/prefs";
 
 const THUMBED = /\.(jpe?g|png|gif|webp|bmp)$/i;
 
-/** Card view of a folder; images show thumbnails, everything else its glyph. */
+/** Card view of a folder; images show thumbnails, documents a preview when enabled, everything else its glyph. */
 export function FileGrid({
   rows, picked, togglePick, activate, favorites, rowProps,
 }: {
@@ -45,7 +47,9 @@ export function FileGrid({
 
 function Art({ entry }: { entry: Entry }) {
   const [failed, setFailed] = useState(false);
+  const { previews } = usePrefs();
   if (!entry.isDir && !failed) {
+    if (previews && PEEKABLE.test(entry.name)) return <DocPreview entry={entry} onFail={() => setFailed(true)} />;
     // SVG renders directly in <img>, which never runs its scripts.
     if (/\.svg$/i.test(entry.name)) return <img src={api.rawUrl(entry.path)} alt="" loading="lazy" onError={() => setFailed(true)} />;
     if (THUMBED.test(entry.name)) return <img src={api.thumbUrl(entry)} alt="" loading="lazy" onError={() => setFailed(true)} />;
