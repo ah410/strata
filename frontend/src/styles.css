@@ -1145,3 +1145,25 @@ button.capacity:focus-visible { outline: 1px solid var(--select); outline-offset
 }
 
 [data-cut] { opacity: 0.5; }
+
+.row.cursor td:first-child { box-shadow: inset 2px 0 0 var(--select); }
+.card.cursor { outline: 1px solid var(--select); outline-offset: 1px; }
+
+.shortcuts { margin: 0; }
+.shortcuts dt { color: var(--ink); }
+.shortcuts dd { margin: 0; display: flex; align-items: center; gap: 4px; flex: none; }
+.shortcuts .or { margin: 0 4px; color: var(--ink-faint); font-size: 11px; }
+kbd {
+  display: inline-block;
+  min-width: 20px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--raised);
+  color: var(--ink-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: center;
+}
+.menu-item kbd { border: 0; background: none; padding: 0; }

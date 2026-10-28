@@ -1,16 +1,23 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import {
   SCOPES, THEMES, THEME_IDS, setAppearance, setScopeTheme, useAppearance,
   type Scope, type ThemeId,
 } from "../lib/themes";
 import { setPref, usePrefs } from "../lib/prefs";
+import { ACTIONS, type Ctx } from "../lib/actions";
+import { display, NAV_KEYS } from "../lib/keys";
 
 const LIGHT = THEME_IDS.filter((id) => !THEMES[id].dark);
 const DARK = THEME_IDS.filter((id) => THEMES[id].dark);
 
-export function AppearanceDialog({ onClose }: { onClose: () => void }) {
+/** Settings: grid previews, themes and the keyboard shortcut reference. */
+export function AppearanceDialog({ onClose, start = "top" }: { onClose: () => void; start?: "top" | "shortcuts" }) {
   const { appearance } = useAppearance();
   const prefs = usePrefs();
+  const keysRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (start === "shortcuts") keysRef.current?.scrollIntoView({ block: "start" });
+  }, [start]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -88,6 +95,9 @@ export function AppearanceDialog({ onClose }: { onClose: () => void }) {
           Settings are saved in this browser. PDFs use the browser's own viewer, so only the frame around them changes.
         </p>
 
+        <h4 ref={keysRef}>Keyboard shortcuts</h4>
+        <ShortcutList />
+
         <div className="dialog-actions" style={{ marginTop: 14 }}>
           <button className="btn primary" onClick={onClose}>Done</button>
         </div>
@@ -131,5 +141,29 @@ function Swatch({ id }: { id: ThemeId }) {
       <i style={{ background: t.green, width: "60%" }} />
       <i style={{ background: t.select, width: "35%" }} />
     </span>
+  );
+}
+
+// A context where every action's label reads naturally on its own.
+const HELP_CTX: Ctx = { selection: [], canStar: true, favorites: new Set(), layout: "list", clipboard: 1 };
+
+function ShortcutList() {
+  const rows = [
+    ...ACTIONS.filter((a) => a.keys).map((a) => ({ keys: a.keys!, label: a.name ?? a.label(HELP_CTX) })),
+    ...NAV_KEYS,
+  ];
+  return (
+    <dl className="shortcuts">
+      {rows.map((r) => (
+        <div key={r.label} className="field-row">
+          <dt>{r.label}</dt>
+          <dd>
+            {r.keys.map((k, i) => (
+              <span key={k}>{i > 0 && <span className="or">or</span>}<kbd>{display(k)}</kbd></span>
+            ))}
+          </dd>
+        </div>
+      ))}
+    </dl>
   );
 }

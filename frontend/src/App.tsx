@@ -12,7 +12,8 @@ import { TrashView } from "./components/TrashView";
 import { FolderPicker } from "./components/FolderPicker";
 import { FileGrid } from "./components/FileGrid";
 import { TextEditor } from "./components/TextEditor";
-import { actionsFor, type ActionId, type Ctx } from "./lib/actions";
+import { actionForKey, actionsFor, type ActionId, type Ctx } from "./lib/actions";
+import { combo, display, step, typeahead, TYPEAHEAD_MS } from "./lib/keys";
 import { ContextMenu } from "./components/ContextMenu";
 import { follow } from "./lib/jobs";
 import { box, overlaps, range, type Box } from "./lib/selection";
@@ -45,7 +46,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [progress, setProgress] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
-  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [appearanceOpen, setAppearanceOpen] = useState<false | "top" | "shortcuts">(false);
   const [historyPath, setHistoryPath] = useState<string | null>(null);
   const closeHistory = useCallback(() => setHistoryPath(null), []);
   const noteTimer = useRef<number>();
@@ -57,6 +58,11 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [menu, setMenu] = useState<null | { x: number; y: number; sel: Entry[] }>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
   const anchor = useRef<string | null>(null);
+  // The keyboard's current item: highlighted, moved with the arrow keys.
+  const [cursor, setCursor] = useState<string | null>(null);
+  const typed = useRef({ text: "", at: 0 });
+  const searchInput = useRef<HTMLInputElement>(null);
+  useEffect(() => setCursor(null), [path]);
   const [clip, setClip] = useState<null | { cut: boolean; items: Entry[] }>(null);
   const [marquee, setMarquee] = useState<Box | null>(null);
 
@@ -166,6 +172,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const hasMods = (ev: Mods) => ev.shiftKey || ev.ctrlKey || ev.metaKey;
   // Click selects one, Ctrl/Cmd toggles, Shift extends from the last click.
   const pick = (p: string, ev: Mods, add = ev.ctrlKey || ev.metaKey) => {
+    setCursor(p);
     if (ev.shiftKey) {
       const span = range(rows.map((e) => e.path), anchor.current, p);
       setPicked((s) => new Set([...(add ? s : []), ...span]));
@@ -417,7 +424,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       if (!picked.has(e.path)) setPicked(new Set([e.path]));
       openMenu(ev, sel);
     },
-    className: dropTarget === e.path ? " drop-on" : "",
+    className: (dropTarget === e.path ? " drop-on" : "") + (cursor === e.path ? " cursor" : ""),
     onDragStart: (ev: React.DragEvent) => {
       ev.dataTransfer.setData(DRAG_TYPE, JSON.stringify(dragPaths(e)));
       ev.dataTransfer.effectAllowed = "copyMove";
@@ -512,6 +519,84 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     }
   };
 
+  // Moves the keyboard cursor to rows[i], selecting as a click would.
+  const moveTo = (i: number, mods: Mods) => {
+    const e = rows[i];
+    if (!e) return;
+    if (mods.ctrlKey || mods.metaKey) setCursor(e.path);
+    else pick(e.path, mods);
+    document.querySelector(`.listing [data-path="${CSS.escape(e.path)}"]`)?.scrollIntoView({ block: "nearest" });
+  };
+
+  const gridCols = () => {
+    const cards = [...document.querySelectorAll<HTMLElement>(".grid-view .card")];
+    return layout === "grid" && cards.length ? cards.filter((c) => c.offsetTop === cards[0].offsetTop).length : 1;
+  };
+
+  // Rebound every render so it always sees current state; it's one listener.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (view !== "files" || e.defaultPrevented) return;
+      if (t.closest?.("input:not([type=checkbox]), textarea, select, [contenteditable=true]")) return;
+      if (document.querySelector(".scrim, .overlay, .menu")) return;
+      const k = combo(e);
+      // Let a focused button or checkbox handle its own activation.
+      if ((k === "Enter" || k === "Space") && t.closest?.("button, input, a")) return;
+      // With text selected, Ctrl+C copies the text as usual.
+      if (k === "Mod+C" && window.getSelection()?.toString()) return;
+
+      const a = actionForKey(k, ctx(pickedEntries));
+      if (a) {
+        e.preventDefault();
+        return perform(a.id, a.on === "space" ? [] : pickedEntries);
+      }
+      const idx = cursor ? rows.findIndex((r) => r.path === cursor) : -1;
+      const nav = k.replace(/^(Mod\+|Shift\+)+/, "");
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(nav) && !e.altKey) {
+        e.preventDefault();
+        return moveTo(step(idx, nav, rows.length, gridCols()), e);
+      }
+      switch (k) {
+        case "Space":
+          e.preventDefault();
+          if (cursor) togglePick(cursor, !picked.has(cursor));
+          return;
+        case "Backspace": case "Alt+ArrowUp":
+          e.preventDefault();
+          if (path && !searchMode) navigate(parentOf(path));
+          return;
+        case "/":
+          e.preventDefault();
+          return searchInput.current?.focus();
+        case "Escape":
+          if (query) return setQuery("");
+          setClip(null);
+          return setPicked(new Set());
+        case "?":
+          e.preventDefault();
+          return setAppearanceOpen("shortcuts");
+        case "Shift+F10": case "ContextMenu": {
+          e.preventDefault();
+          const el = document.querySelector(`.listing [data-path="${CSS.escape(cursor ?? "")}"]`) ?? document.querySelector(".listing");
+          const r = el!.getBoundingClientRect();
+          return setMenu({ x: r.left + 24, y: r.top + Math.min(r.height / 2, 40), sel: pickedEntries });
+        }
+      }
+      // Typing a name jumps to it.
+      if (k.length === 1 && k !== " ") {
+        const now = Date.now();
+        const tt = typed.current;
+        tt.text = now - tt.at < TYPEAHEAD_MS ? tt.text + k : k;
+        tt.at = now;
+        const i = typeahead(rows.map((r) => r.name), tt.text, tt.text.length === 1 ? idx + 1 : Math.max(idx, 0));
+        if (i >= 0) moveTo(i, { shiftKey: false, ctrlKey: false, metaKey: false });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   return (
     <div className="shell">
       <aside className={`rail${railOpen ? " open" : ""}`}>
@@ -526,7 +611,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
           </button>
           <button
             className="btn btn-icon"
-            onClick={() => setAppearanceOpen(true)}
+            onClick={() => setAppearanceOpen("top")}
             aria-label="Settings"
             title="Settings"
           >
@@ -634,12 +719,15 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
 
           <div className="search">
             <input
+              ref={searchInput}
               type="search"
               placeholder={path ? `Search in ${path.split("/").pop()}` : "Search all files"}
               aria-label="Search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Escape" && setQuery("")}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") { setQuery(""); e.currentTarget.blur(); }
+              }}
             />
           </div>
 
@@ -830,13 +918,13 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
         <ContextMenu
           x={menu.x}
           y={menu.y}
-          items={actionsFor(ctx(menu.sel), "menu").map((a) => ({ id: a.id, label: a.label(ctx(menu.sel)), group: a.group, danger: a.danger }))}
+          items={actionsFor(ctx(menu.sel), "menu").map((a) => ({ id: a.id, label: a.label(ctx(menu.sel)), group: a.group, danger: a.danger, hint: a.keys && display(a.keys[0]) }))}
           onPick={(id) => perform(id as ActionId, menu.sel)}
           onClose={closeMenu}
         />
       )}
 
-      {appearanceOpen && <AppearanceDialog onClose={() => setAppearanceOpen(false)} />}
+      {appearanceOpen && <AppearanceDialog start={appearanceOpen} onClose={() => setAppearanceOpen(false)} />}
       {historyPath && <History path={historyPath} onClose={closeHistory} onRestored={() => { toast("Version restored"); refresh(); }} />}
 
       {prompt && (

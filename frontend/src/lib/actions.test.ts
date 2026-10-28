@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actionsFor, type Ctx } from "./actions";
+import { actionForKey, actionsFor, type Ctx } from "./actions";
 import type { Entry } from "./api";
 
 const file = (path: string): Entry => ({ name: path.split("/").pop()!, path, isDir: false, size: 1, modified: "", kind: "file" });
@@ -50,5 +50,20 @@ describe("actionsFor", () => {
   it("keeps menu-only actions out of the toolbar", () => {
     expect(ids(ctx([file("a")]), "toolbar")).not.toContain("open");
     expect(ids(ctx([]), "toolbar")).not.toContain("selectAll");
+  });
+});
+
+describe("actionForKey", () => {
+  it("runs item shortcuts only with a selection", () => {
+    expect(actionForKey("F2", ctx([file("a")]))?.id).toBe("rename");
+    expect(actionForKey("F2", ctx([]))).toBeUndefined();
+    expect(actionForKey("F2", ctx([file("a"), file("b")]))).toBeUndefined();
+    expect(actionForKey("Delete", ctx([file("a"), file("b")]))?.id).toBe("delete");
+  });
+
+  it("runs folder shortcuts whatever is selected", () => {
+    expect(actionForKey("Alt+N", ctx([file("a")]))?.id).toBe("newFolder");
+    expect(actionForKey("Mod+V", ctx([file("a")], { clipboard: 1 }))?.id).toBe("paste");
+    expect(actionForKey("Mod+V", ctx([]))).toBeUndefined();
   });
 });
