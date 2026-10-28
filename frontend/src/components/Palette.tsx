@@ -24,7 +24,11 @@ export function Palette({ commands, onReveal, onClose }: { commands: Command[]; 
     if (q.trim().length < 2) return setFound([]);
     const ctl = new AbortController();
     const t = window.setTimeout(() => {
-      api.search("", q.trim(), ctl.signal).then((r) => setFound(r.entries.slice(0, 30)), () => undefined);
+      // Folders first, so each kind sits under one heading.
+      api.search("", q.trim(), ctl.signal).then(
+        (r) => setFound([...r.entries].sort((a, b) => Number(b.isDir) - Number(a.isDir)).slice(0, 30)),
+        () => undefined,
+      );
     }, 180);
     return () => { window.clearTimeout(t); ctl.abort(); };
   }, [q]);
