@@ -1177,3 +1177,25 @@ kbd {
 .dialog.info .btn { height: 24px; }
 .sum { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .sum code { overflow-wrap: anywhere; font-family: var(--mono); font-size: 11px; color: var(--ink-dim); text-align: left; }
+
+.tabs { display: flex; gap: 2px; margin: 4px 0 10px; border-bottom: 1px solid var(--line); }
+.tabs button {
+  padding: 7px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--select); }
+.dupes-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0; color: var(--ink-dim); }
+.dupes-bar strong { color: var(--ink); }
+.dupe-list { list-style: none; margin: 0; padding: 0; }
+.dupe-list li { padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
+.dupe-head { margin-bottom: 4px; font-size: 12px; color: var(--ink-faint); }
+.dupe-row { display: flex; align-items: center; gap: 8px; height: 26px; cursor: pointer; }
+.dialog .dupe-row input { flex: none; width: 15px; height: 15px; margin: 0; padding: 0; accent-color: var(--select); }
+.dupe-row .bar-label { flex: 1; min-width: 0; }
+.dupe-row .link { margin-left: auto; font-size: 12px; }

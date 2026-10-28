@@ -325,6 +325,7 @@ func newHandler(name string, hosts []string, gate *auth.Gate) http.Handler {
 	mux.HandleFunc("POST /api/extract", handleExtract)
 	mux.HandleFunc("POST /api/compress", handleCompress)
 	mux.HandleFunc("GET /api/info", handleInfo)
+	mux.HandleFunc("POST /api/duplicates", handleDuplicates)
 	mux.HandleFunc("POST /api/checksum", handleChecksum)
 	mux.HandleFunc("GET /api/jobs/{id}", handleJob)
 	mux.HandleFunc("DELETE /api/jobs/{id}", handleJobCancel)
@@ -952,6 +953,26 @@ func handleChecksum(w http.ResponseWriter, r *http.Request) {
 	}
 	id := runner.Start("checksum", func(ctx context.Context, report jobs.Progress) (any, error) {
 		return fileops.Checksum(ctx, root, e.Path, report)
+	})
+	writeJSON(w, map[string]any{"job": id})
+}
+
+// handleDuplicates looks for identical files below a folder, as a job.
+func handleDuplicates(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path    string `json:"path"`
+		MinSize int64  `json:"minSize"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	l, err := fileops.List(root, req.Path)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	id := runner.Start("duplicates", func(ctx context.Context, report jobs.Progress) (any, error) {
+		return fileops.Duplicates(ctx, root, l.Path, req.MinSize, report)
 	})
 	writeJSON(w, map[string]any{"job": id})
 }

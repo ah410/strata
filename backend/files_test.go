@@ -209,3 +209,21 @@ func TestInfoAndChecksumOverHTTP(t *testing.T) {
 		t.Fatal("root checksummed")
 	}
 }
+
+func TestDuplicatesOverHTTP(t *testing.T) {
+	h, dir := testServer(t)
+	os.WriteFile(filepath.Join(dir, "a.bin"), []byte("same"), 0o644)
+	os.WriteFile(filepath.Join(dir, "b.bin"), []byte("same"), 0o644)
+	hdr := map[string]string{"Content-Type": "application/json", "X-Strata": "1"}
+	rec := do(h, "POST", "/api/duplicates", "strata.example.com", `{"path":"","minSize":1}`, hdr)
+	var start struct{ Job string }
+	json.Unmarshal(rec.Body.Bytes(), &start)
+	j := waitJob(t, h, start.Job)
+	groups, _ := j["result"].([]any)
+	if j["state"] != "done" || len(groups) != 1 {
+		t.Fatalf("job = %v", j)
+	}
+	if rec := do(h, "POST", "/api/duplicates", "strata.example.com", `{"path":"a.bin"}`, hdr); rec.Code == 200 {
+		t.Fatal("file accepted as a folder")
+	}
+}

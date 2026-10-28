@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type Kind, type SizeEntry, type SizeReport, type Usage } from "../lib/api";
 import { bytes, parentOf, when } from "../lib/format";
 import { Glyph } from "./Glyph";
+import { Duplicates } from "./Duplicates";
 
 const KIND_LABEL: Partial<Record<Kind, string>> = {
   video: "Video", image: "Images", audio: "Audio", doc: "Documents", sheet: "Spreadsheets",
@@ -34,6 +35,7 @@ export function StorageDashboard({
   const [path, setPath] = useState("");
   const [report, setReport] = useState<SizeReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<"sizes" | "dupes">("sizes");
 
   const load = useCallback((rescan = false) => {
     api.sizes(path, rescan).then((r) => { setReport(r); setError(null); }, (e: Error) => setError(e.message));
@@ -88,6 +90,14 @@ export function StorageDashboard({
           {path && <button className="btn dash-show" onClick={() => { onNavigate(path); onClose(); }}>Show in files</button>}
         </div>
 
+        <div className="tabs" role="tablist">
+          <button role="tab" aria-selected={tab === "sizes"} onClick={() => setTab("sizes")}>What's using space</button>
+          <button role="tab" aria-selected={tab === "dupes"} onClick={() => setTab("dupes")}>Duplicates</button>
+        </div>
+
+        {tab === "dupes" && <Duplicates path={path} onNavigate={(p) => { onNavigate(p); onClose(); }} />}
+
+        {tab === "sizes" && <>
         {error && <p className="dash-error">{error}</p>}
         {!report?.ready && !error && <div className="dash-wait">Adding up every file. This can take a few minutes on a large share; you can close this and come back.</div>}
 
@@ -126,6 +136,7 @@ export function StorageDashboard({
             <span>Version history <strong>{bytes(report.versions)}</strong></span>
           </div>
         )}
+        </>}
       </div>
     </div>
   );

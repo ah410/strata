@@ -104,6 +104,12 @@ export interface FileInfo extends Entry {
   height?: number;
 }
 
+export interface DupeGroup {
+  size: number;
+  paths: string[];
+  wasted: number;
+}
+
 export interface CellStyle {
   bold?: boolean;
   italic?: boolean;
@@ -340,6 +346,14 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path }),
+    }).then((r) => r.job),
+
+  /** Starts a duplicate search below path; resolves to the job id. */
+  duplicates: (path: string, minSize: number) =>
+    req<{ job: string }>("/api/duplicates", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, minSize }),
     }).then((r) => r.job),
 
   job: <R>(id: string) => req<Job<R>>(`/api/jobs/${q(id)}`),
