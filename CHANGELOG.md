@@ -13,6 +13,10 @@
 - Shift-click selects a range, Ctrl/Cmd-click adds one item, and dragging
   across empty space selects everything the box touches.
 - Paste files or a screenshot to upload them to the open folder.
+- Uploads show how much has gone up out of the total, how many files are
+  done, the speed and the time left, and can be canceled. Files appear in the
+  folder as they finish rather than all at the end, uploads started meanwhile
+  wait their turn, and closing the tab mid-upload asks first.
 - An info panel with exact size, type, image dimensions and an on-demand
   SHA-256.
 - The Strata name in the sidebar goes back to All files.

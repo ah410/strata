@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, type AppState, type Entry, type Listing, type SearchResult } from "./lib/api";
-import { fromDrop, fromInput, fromPaste, uploadAll, type UploadItem } from "./lib/upload";
+import { Canceled, fromDrop, fromInput, fromPaste, uploadAll, type UploadItem, type UploadStatus } from "./lib/upload";
+import { UploadPanel } from "./components/UploadPanel";
 import { bytes, freeCopyName, joinPath, parentOf, when } from "./lib/format";
 import { Capacity } from "./components/Capacity";
 import { Glyph } from "./components/Glyph";
@@ -291,19 +292,66 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     return parts.map((name, i) => ({ name, path: parts.slice(0, i + 1).join("/") }));
   }, [path]);
 
-  const upload = async (list: UploadItem[]) => {
-    if (!list.length) return;
-    setProgress(0);
-    try {
-      await uploadAll(path, list, setProgress);
-      toast(`Uploaded ${list.length} file${list.length === 1 ? "" : "s"}`);
-      refresh();
-    } catch (e) {
-      toast((e as Error).message, true);
-    } finally {
-      setProgress(null);
-    }
+  // Uploads run one at a time; more dropped meanwhile wait in a queue.
+  const [upState, setUpState] = useState<null | { dir: string; status: UploadStatus }>(null);
+  const [queued, setQueued] = useState(0);
+  const queue = useRef<{ dir: string; items: UploadItem[] }[]>([]);
+  const running = useRef<AbortController | null>(null);
+  const lastReload = useRef(0);
+  const pathRef = useRef(path);
+  pathRef.current = path;
+
+  // Shows new files without touching the selection or the search.
+  const reloadQuiet = () => {
+    lastReload.current = Date.now();
+    api.list(pathRef.current).then(setListing, () => undefined);
   };
+
+  const upload = (list: UploadItem[]) => {
+    if (!list.length) return;
+    queue.current.push({ dir: path, items: list });
+    if (running.current) setQueued(queue.current.reduce((n, q) => n + q.items.length, 0));
+    else drain();
+  };
+
+  const drain = async () => {
+    while (queue.current.length) {
+      const job = queue.current.shift()!;
+      setQueued(queue.current.reduce((n, q) => n + q.items.length, 0));
+      const ctl = new AbortController();
+      running.current = ctl;
+      try {
+        const n = await uploadAll(job.dir, job.items, {
+          signal: ctl.signal,
+          onProgress: (status) => setUpState({ dir: job.dir, status }),
+          // Files appear as they land, at most every couple of seconds.
+          onLanded: () => Date.now() - lastReload.current > 2000 && reloadQuiet(),
+        });
+        toast(`Uploaded ${plural(n, "file")} to /${job.dir}`);
+      } catch (e) {
+        if (e instanceof Canceled) {
+          queue.current = [];
+          setQueued(0);
+          toast("Upload canceled. Files that had finished are kept.");
+          // A batch can still be landing as the cancel goes out.
+          window.setTimeout(reloadQuiet, 1500);
+        } else {
+          toast((e as Error).message, true);
+        }
+      }
+    }
+    running.current = null;
+    setUpState(null);
+    reloadQuiet();
+  };
+
+  // Closing the tab mid-upload asks first.
+  useEffect(() => {
+    if (!upState) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [!!upState]);
 
   // Deleting moves to the trash at once; the toast offers Undo. Only a
   // location without a trash asks before deleting permanently.
@@ -1008,6 +1056,8 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
           onClose={() => setPrompt(null)}
         />
       )}
+
+      {upState && <UploadPanel status={upState.status} dir={upState.dir} queued={queued} onCancel={() => running.current?.abort()} />}
 
       {note && (
         <div className={`toast${note.error ? " err" : ""}`} role="status">

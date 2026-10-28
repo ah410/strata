@@ -15,56 +15,104 @@ const BATCH_FILES = 200;
 const MIN_CHUNK = 256 << 10;
 const RETRIES = 6;
 
-// Shrinks for the rest of the session once a proxy rejects a chunk as too big.
-let chunkCap = 8 << 20;
+// Shrinks for the rest of the session once a proxy rejects a request as too
+// big, so only the first request learns the limit the hard way.
+let requestCap = BATCH_BYTES;
 
-type Progress = (pct: number) => void;
+/** Where an upload is: bytes and files sent so far, out of the total. */
+export interface UploadStatus {
+  sent: number;
+  total: number;
+  files: number;
+  done: number;
+}
 
-/** Uploads every item into dir, reporting overall progress. */
-export async function uploadAll(dir: string, items: UploadItem[], onProgress?: Progress) {
-  const total = items.reduce((n, i) => n + i.file.size, 0) || 1;
+export interface UploadOptions {
+  onProgress?: (s: UploadStatus) => void;
+  /** Called each time files finish arriving, so the listing can show them. */
+  onLanded?: () => void;
+  signal?: AbortSignal;
+}
+
+/** Thrown when the upload was canceled; files that already landed stay. */
+export class Canceled extends Error {
+  constructor() {
+    super("Upload canceled");
+  }
+}
+
+/** Uploads every item into dir. Resolves to the number of files sent. */
+export async function uploadAll(dir: string, items: UploadItem[], opts: UploadOptions = {}) {
+  const total = items.reduce((n, i) => n + i.file.size, 0);
+  let sent = 0;
   let done = 0;
-  const report = (inFlight: number) => onProgress?.(((done + inFlight) / total) * 100);
+  // Multipart progress counts form overhead too; never report past a batch.
+  const report = (inFlight: number, cap: number) =>
+    opts.onProgress?.({ sent: sent + Math.min(inFlight, cap), total, files: items.length, done });
+  const landed = (files: number, bytes: number) => {
+    done += files;
+    sent += bytes;
+    report(0, 0);
+    opts.onLanded?.();
+  };
+  ctx = { signal: opts.signal };
 
   const small = items.filter((i) => i.file.size < CHUNKED_FROM);
   const big = items.filter((i) => i.file.size >= CHUNKED_FROM);
 
-  for (const batch of batches(small, BATCH_BYTES, BATCH_FILES)) {
-    await multipartOrSplit(dir, batch, (n) => report(n));
-    done += batch.reduce((n, i) => n + i.file.size, 0);
+  report(0, 0);
+  for (let i = 0; i < small.length; ) {
+    const batch = small.slice(i, nextBatch(small, i, requestCap, BATCH_FILES));
+    i += batch.length;
+    const bytes = batch.reduce((n, i) => n + i.file.size, 0);
+    await multipartOrSplit(dir, batch, (n) => report(n, bytes));
+    landed(batch.length, bytes);
   }
   for (const item of big) {
-    await chunked(dir, item, report);
-    done += item.file.size;
+    await chunked(dir, item, (n) => report(n, item.file.size));
+    landed(1, item.file.size);
   }
-  report(0);
+  return items.length;
 }
+
+// The running upload's cancel signal; one upload runs at a time.
+let ctx: { signal?: AbortSignal } = {};
+const checkCanceled = () => {
+  if (ctx.signal?.aborted) throw new Canceled();
+};
 
 /** Groups items into runs of at most maxBytes (a lone bigger file gets its own) and maxFiles. */
 export function batches(items: UploadItem[], maxBytes: number, maxFiles: number): UploadItem[][] {
   const out: UploadItem[][] = [];
-  let cur: UploadItem[] = [];
-  let bytes = 0;
-  for (const it of items) {
-    if (cur.length && (bytes + it.file.size > maxBytes || cur.length >= maxFiles)) {
-      out.push(cur);
-      cur = [];
-      bytes = 0;
-    }
-    cur.push(it);
-    bytes += it.file.size;
+  for (let i = 0; i < items.length; ) {
+    const end = nextBatch(items, i, maxBytes, maxFiles);
+    out.push(items.slice(i, end));
+    i = end;
   }
-  if (cur.length) out.push(cur);
   return out;
+}
+
+/** End index of the batch starting at start; always at least one item. */
+function nextBatch(items: UploadItem[], start: number, maxBytes: number, maxFiles: number): number {
+  let bytes = items[start].file.size;
+  let end = start + 1;
+  while (end < items.length && end - start < maxFiles && bytes + items[end].file.size <= maxBytes) {
+    bytes += items[end].file.size;
+    end++;
+  }
+  return end;
 }
 
 // A 413 from the proxy halves the batch; a single file then goes in chunks,
 // which shrink until they fit.
 async function multipartOrSplit(dir: string, items: UploadItem[], report: (n: number) => void): Promise<void> {
+  checkCanceled();
   try {
     await multipart(dir, items, report);
   } catch (e) {
     if (!(e instanceof ApiError) || e.status !== 413) throw e;
+    const size = items.reduce((n, i) => n + i.file.size, 0);
+    requestCap = Math.min(requestCap, Math.max(MIN_CHUNK, Math.floor(size / 2)));
     if (items.length === 1) return chunked(dir, items[0], report);
     const mid = Math.ceil(items.length / 2);
     const first = items.slice(0, mid);
@@ -91,7 +139,7 @@ async function chunked(dir: string, { file, rel }: UploadItem, report: (n: numbe
   const key = `strata:upload:${dir}/${rel}:${file.size}:${file.lastModified}`;
   let id = store.get(key);
   let offset = id ? await head(id) : -1;
-  let chunk = chunkCap;
+  let chunk = requestCap;
   if (offset < 0) {
     const res = await fetch("/api/uploads", {
       method: "POST",
@@ -108,8 +156,15 @@ async function chunked(dir: string, { file, rel }: UploadItem, report: (n: numbe
   }
 
   let failures = 0;
+  const cancel = () => {
+    // Drop the server's partial copy rather than leave it for the sweeper.
+    fetch(`/api/uploads/${id}`, { method: "DELETE", headers: { "X-Strata": "1" } }).catch(() => undefined);
+    store.del(key);
+    return new Canceled();
+  };
   while (offset < file.size) {
-    chunk = Math.min(chunk, chunkCap);
+    if (ctx.signal?.aborted) throw cancel();
+    chunk = Math.min(chunk, requestCap);
     const end = Math.min(offset + chunk, file.size);
     const base = offset;
     try {
@@ -125,7 +180,7 @@ async function chunked(dir: string, { file, rel }: UploadItem, report: (n: numbe
         continue;
       }
       if (x.status === 413 && chunk > MIN_CHUNK) {
-        chunkCap = Math.max(MIN_CHUNK, Math.floor(chunk / 2));
+        requestCap = Math.max(MIN_CHUNK, Math.floor(chunk / 2));
         continue;
       }
       if (x.status === 404) {
@@ -134,6 +189,7 @@ async function chunked(dir: string, { file, rel }: UploadItem, report: (n: numbe
       }
       throw new ApiError(errorText(x.status, x.text, "Upload failed"), x.status);
     } catch (e) {
+      if (e instanceof Canceled) throw cancel();
       if (e instanceof ApiError || ++failures > RETRIES) throw e;
       await sleep(1000 * 2 ** (failures - 1));
       const at = await head(id!);
@@ -171,6 +227,9 @@ function send(method: string, url: string, body: XMLHttpRequestBodyInit, headers
       resolve({ status: xhr.status, text: xhr.responseText.trim(), offset: xhr.getResponseHeader("Upload-Offset") });
     };
     xhr.onerror = () => reject(new Error("network"));
+    xhr.onabort = () => reject(new Canceled());
+    if (ctx.signal?.aborted) return reject(new Canceled());
+    ctx.signal?.addEventListener("abort", () => xhr.abort(), { once: true });
     xhr.send(body);
   });
 }
