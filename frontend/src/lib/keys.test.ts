@@ -20,6 +20,7 @@ describe("combo", () => {
     expect(combo(k("?", { shiftKey: true, code: "Slash" }))).toBe("?");
     expect(combo(k(" "))).toBe("Space");
     expect(combo(k("F10", { shiftKey: true }))).toBe("Shift+F10");
+    expect(combo(k("/", { ctrlKey: true, code: "Slash" }), false)).toBe("Mod+/");
   });
 });
 

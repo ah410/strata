@@ -175,6 +175,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
 
   const togglePick = (p: string, on: boolean) => {
     anchor.current = p;
+    setCursor(p);
     setPicked((s) => {
       const next = new Set(s);
       on ? next.add(p) : next.delete(p);
@@ -615,6 +616,9 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const moveTo = (i: number, mods: Mods) => {
     const e = rows[i];
     if (!e) return;
+    // A button or checkbox clicked earlier would otherwise take Enter and Space.
+    const focused = document.activeElement as HTMLElement | null;
+    if (focused?.closest(".listing, .actions")) focused.blur();
     if (mods.ctrlKey || mods.metaKey) setCursor(e.path);
     else pick(e.path, mods);
     document.querySelector(`.listing [data-path="${CSS.escape(e.path)}"]`)?.scrollIntoView({ block: "nearest" });
@@ -643,6 +647,12 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       // With text selected, Ctrl+C copies the text as usual.
       if (k === "Mod+C" && window.getSelection()?.toString()) return;
 
+      // Enter opens the item under the keyboard cursor, folder or file.
+      const atCursor = cursor ? rows.find((r) => r.path === cursor) : undefined;
+      if (k === "Enter" && atCursor) {
+        e.preventDefault();
+        return activate(atCursor);
+      }
       const a = actionForKey(k, ctx(pickedEntries));
       if (a) {
         e.preventDefault();
@@ -670,7 +680,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
           if (query) return setQuery("");
           setClip(null);
           return setPicked(new Set());
-        case "?":
+        case "?": case "Mod+/":
           e.preventDefault();
           return setAppearanceOpen("shortcuts");
         case "Shift+F10": case "ContextMenu": {

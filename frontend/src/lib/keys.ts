@@ -55,7 +55,7 @@ export const NAV_KEYS: { keys: string[]; label: string }[] = [
   { keys: ["/"], label: "Search this folder" },
   { keys: ["Escape"], label: "Clear the selection or search" },
   { keys: ["Shift+F10"], label: "Open the menu for the selection" },
-  { keys: ["?"], label: "Show these shortcuts" },
+  { keys: ["?", "Mod+/"], label: "Show these shortcuts" },
 ];
 
 /** Typing a name jumps to it; keystrokes within this gap join one prefix. */
