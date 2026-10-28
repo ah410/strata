@@ -38,10 +38,6 @@ connections of its own and has no analytics.
 I wanted Nextcloud's convenience for my own NAS without running Nextcloud, so I built Strata with
 Claude in Claude Code, directing the work and testing it against my own TrueNAS server.
 
-Strata is an independent project. It is not affiliated with, endorsed by or sponsored by TrueNAS
-or iXsystems. TrueNAS® is a registered trademark of iXsystems, Inc., used here only to say what
-Strata works with.
-
 ## Install
 
 ### TrueNAS SCALE
@@ -348,5 +344,4 @@ thumbnails, and `.7z` and `.rar` archives can be downloaded but not extracted.
 
 ## License
 
-Strata is licensed under the [MIT License](LICENSE). The name, icon and visual design are its own
-and are not TrueNAS or iXsystems assets.
+Strata is licensed under the [MIT License](LICENSE).
