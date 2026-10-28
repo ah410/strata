@@ -47,6 +47,10 @@ var embedded embed.FS
 // is generous; the reverse proxy should carry a matching limit.
 const maxUpload = 8 << 30 // 8 GiB
 
+// maxFile caps one resumable upload. Chunks land on disk as they arrive, so
+// free space is the real limit; this only rejects absurd sizes.
+const maxFile = 1 << 50 // 1 PiB
+
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
@@ -742,7 +746,7 @@ func handleUploadStart(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	id, err := fileops.StartUpload(root, path.Join(safepath.Clean(req.Dir), rel), req.Size, maxUpload)
+	id, err := fileops.StartUpload(root, path.Join(safepath.Clean(req.Dir), rel), req.Size, maxFile)
 	if err != nil {
 		fail(w, err)
 		return

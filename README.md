@@ -192,8 +192,10 @@ file with an ACL. Strata never needs to.
 Put Strata on NPM's Docker network, set `STRATA_TRUSTED_PROXIES` to that
 network's subnet and `STRATA_ALLOWED_HOSTS` to your hostname, and forward to
 `strata:8080` over `http`. Drop the `ports:` mapping so the only way in is
-through the proxy. NPM's default 1 MB body limit rejects real uploads, so add
-this under the proxy host's **Advanced** tab:
+through the proxy. Strata keeps every upload request to about 8 MB and
+shrinks it further if the proxy still answers 413, so uploads work behind
+NPM's default 1 MB body limit, just slower. For full speed, add this under the
+proxy host's **Advanced** tab:
 
 ```nginx
 client_max_body_size 0;

@@ -83,6 +83,10 @@ func StartUpload(root *safepath.Root, rel string, size, max int64) (string, erro
 	if size < 0 || size > max {
 		return "", userr.Error("file is too large")
 	}
+	// Refuse up front rather than failing hours into a 50 GB upload.
+	if u, err := Usage(root); err == nil && uint64(size) > u.Free {
+		return "", userr.Error("not enough free space for this file")
+	}
 	if err := root.FS().MkdirAll(path.Dir(rel), 0o755); err != nil {
 		return "", safepath.Err(err)
 	}

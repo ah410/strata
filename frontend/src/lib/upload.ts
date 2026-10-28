@@ -1,4 +1,4 @@
-import { ApiError, signedOut } from "./api";
+import { ApiError, errorText, signedOut } from "./api";
 
 /** A file plus where it goes, relative to the upload's target folder. */
 export interface UploadItem {
@@ -6,9 +6,17 @@ export interface UploadItem {
   rel: string;
 }
 
-// Big files go in resumable chunks; small ones share one multipart request.
-const CHUNKED_FROM = 16 << 20;
+// Big files go in resumable chunks; small ones share multipart requests.
+// No request carries much more than BATCH_BYTES, so a reverse proxy's body
+// limit (often a few MB) doesn't reject a folder of thousands of photos.
+const CHUNKED_FROM = 8 << 20;
+const BATCH_BYTES = 8 << 20;
+const BATCH_FILES = 200;
+const MIN_CHUNK = 256 << 10;
 const RETRIES = 6;
+
+// Shrinks for the rest of the session once a proxy rejects a chunk as too big.
+let chunkCap = 8 << 20;
 
 type Progress = (pct: number) => void;
 
@@ -21,15 +29,49 @@ export async function uploadAll(dir: string, items: UploadItem[], onProgress?: P
   const small = items.filter((i) => i.file.size < CHUNKED_FROM);
   const big = items.filter((i) => i.file.size >= CHUNKED_FROM);
 
-  if (small.length) {
-    await multipart(dir, small, report);
-    done += small.reduce((n, i) => n + i.file.size, 0);
+  for (const batch of batches(small, BATCH_BYTES, BATCH_FILES)) {
+    await multipartOrSplit(dir, batch, (n) => report(n));
+    done += batch.reduce((n, i) => n + i.file.size, 0);
   }
   for (const item of big) {
     await chunked(dir, item, report);
     done += item.file.size;
   }
   report(0);
+}
+
+/** Groups items into runs of at most maxBytes (a lone bigger file gets its own) and maxFiles. */
+export function batches(items: UploadItem[], maxBytes: number, maxFiles: number): UploadItem[][] {
+  const out: UploadItem[][] = [];
+  let cur: UploadItem[] = [];
+  let bytes = 0;
+  for (const it of items) {
+    if (cur.length && (bytes + it.file.size > maxBytes || cur.length >= maxFiles)) {
+      out.push(cur);
+      cur = [];
+      bytes = 0;
+    }
+    cur.push(it);
+    bytes += it.file.size;
+  }
+  if (cur.length) out.push(cur);
+  return out;
+}
+
+// A 413 from the proxy halves the batch; a single file then goes in chunks,
+// which shrink until they fit.
+async function multipartOrSplit(dir: string, items: UploadItem[], report: (n: number) => void): Promise<void> {
+  try {
+    await multipart(dir, items, report);
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.status !== 413) throw e;
+    if (items.length === 1) return chunked(dir, items[0], report);
+    const mid = Math.ceil(items.length / 2);
+    const first = items.slice(0, mid);
+    const sent = first.reduce((n, i) => n + i.file.size, 0);
+    await multipartOrSplit(dir, first, report);
+    await multipartOrSplit(dir, items.slice(mid), (n) => report(sent + n));
+  }
 }
 
 function multipart(dir: string, items: UploadItem[], report: (n: number) => void) {
@@ -40,7 +82,7 @@ function multipart(dir: string, items: UploadItem[], report: (n: number) => void
   }
   // XHR rather than fetch: fetch still can't report upload progress.
   return send("POST", `/api/upload?path=${encodeURIComponent(dir)}`, form, {}, (n) => report(n)).then((x) => {
-    if (x.status < 200 || x.status >= 300) throw new ApiError(x.text || `Upload failed (${x.status})`, x.status);
+    if (x.status < 200 || x.status >= 300) throw new ApiError(errorText(x.status, x.text, "Upload failed"), x.status);
   });
 }
 
@@ -49,7 +91,7 @@ async function chunked(dir: string, { file, rel }: UploadItem, report: (n: numbe
   const key = `strata:upload:${dir}/${rel}:${file.size}:${file.lastModified}`;
   let id = store.get(key);
   let offset = id ? await head(id) : -1;
-  let chunk = 8 << 20;
+  let chunk = chunkCap;
   if (offset < 0) {
     const res = await fetch("/api/uploads", {
       method: "POST",
@@ -57,7 +99,7 @@ async function chunked(dir: string, { file, rel }: UploadItem, report: (n: numbe
       body: JSON.stringify({ dir, name: rel, size: file.size }),
     });
     if (res.status === 401) signedOut();
-    if (!res.ok) throw new ApiError((await res.text()).trim() || "Upload failed", res.status);
+    if (!res.ok) throw new ApiError(errorText(res.status, await res.text(), "Upload failed"), res.status);
     const r = (await res.json()) as { id: string; chunk: number };
     id = r.id;
     chunk = r.chunk || chunk;
@@ -67,6 +109,7 @@ async function chunked(dir: string, { file, rel }: UploadItem, report: (n: numbe
 
   let failures = 0;
   while (offset < file.size) {
+    chunk = Math.min(chunk, chunkCap);
     const end = Math.min(offset + chunk, file.size);
     const base = offset;
     try {
@@ -81,11 +124,15 @@ async function chunked(dir: string, { file, rel }: UploadItem, report: (n: numbe
         failures = 0;
         continue;
       }
+      if (x.status === 413 && chunk > MIN_CHUNK) {
+        chunkCap = Math.max(MIN_CHUNK, Math.floor(chunk / 2));
+        continue;
+      }
       if (x.status === 404) {
         store.del(key);
         throw new ApiError("Upload expired; please try again", 404);
       }
-      throw new ApiError(x.text || `Upload failed (${x.status})`, x.status);
+      throw new ApiError(errorText(x.status, x.text, "Upload failed"), x.status);
     } catch (e) {
       if (e instanceof ApiError || ++failures > RETRIES) throw e;
       await sleep(1000 * 2 ** (failures - 1));
@@ -96,7 +143,7 @@ async function chunked(dir: string, { file, rel }: UploadItem, report: (n: numbe
   }
 
   const res = await fetch(`/api/uploads/${id}/finish`, { method: "POST", headers: { "X-Strata": "1" } });
-  if (!res.ok) throw new ApiError((await res.text()).trim() || "Upload failed", res.status);
+  if (!res.ok) throw new ApiError(errorText(res.status, await res.text(), "Upload failed"), res.status);
   store.del(key);
 }
 

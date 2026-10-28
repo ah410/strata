@@ -186,6 +186,21 @@ func TestUploadRefusalsAndSweep(t *testing.T) {
 	if _, err := StartUpload(root, "big", 11, 10); err == nil {
 		t.Error("over-limit size accepted")
 	}
+	// Past the old 8 GiB cap is fine; past the disk's free space is not.
+	u, err := Usage(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StartUpload(root, "huge", int64(u.Free)+1, 1<<50); err == nil || !strings.Contains(err.Error(), "free space") {
+		t.Errorf("upload larger than free space: err = %v", err)
+	}
+	if u.Free > 9<<30 {
+		id, err := StartUpload(root, "takeout.zip", 9<<30, 1<<50)
+		if err != nil {
+			t.Errorf("9 GiB upload refused: %v", err)
+		}
+		AbortUpload(root, id)
+	}
 	if _, err := WriteChunk(root, "../../../etc/passwd", 0, strings.NewReader("x")); err == nil {
 		t.Error("bad id accepted")
 	}

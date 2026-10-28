@@ -103,6 +103,20 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The message to show for a failed response. Proxies answer with HTML pages,
+ * which make no sense in a toast, so those become a plain sentence.
+ */
+export function errorText(status: number, body: string, fallback = `${status} error`): string {
+  const text = body.trim();
+  if (/^<|<html|<body/i.test(text)) {
+    if (status === 413) return "The reverse proxy in front of Strata rejected the request as too large";
+    if (status === 502 || status === 503 || status === 504) return "Strata didn't answer in time (the proxy returned " + status + ")";
+    return `The server returned an error page (${status})`;
+  }
+  return text || fallback;
+}
+
 // The server rejects state-changing requests without this header; a
 // cross-site page can't add it without a CORS preflight we never approve.
 const GUARD = { "X-Strata": "1" };
@@ -113,7 +127,7 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
     signedOut();
   }
   if (!res.ok) {
-    throw new ApiError((await res.text()).trim() || `${res.status} ${res.statusText}`, res.status);
+    throw new ApiError(errorText(res.status, await res.text(), `${res.status} ${res.statusText}`), res.status);
   }
   return res.json() as Promise<T>;
 }
