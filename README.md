@@ -37,12 +37,10 @@ Created with Claude as a POC.
 
 ### TrueNAS SCALE
 
-Strata is [submitted to the TrueNAS community catalog](https://github.com/truenas/apps/pull/6142)
-and pending review. Once it's listed, install **Strata** from Apps, pick the
+Install **Strata** from Apps, pick the
 dataset to browse, and give the app's user (568 `apps` by default) a
 **Modify** ACL entry on it. When it's running, open the app's logs, copy the
-setup code, and open the Web UI to choose a passphrase. Until then, use the
-compose file below.
+setup code, and open the Web UI to choose a passphrase.
 
 ### Docker Compose (or a Dockge stack)
 
