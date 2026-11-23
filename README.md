@@ -86,7 +86,7 @@ selection as a zip, compress it to a zip on the share, or extract a `.zip` or `.
 new folder.
 
 Images, PDF, video and audio open in the browser. The grid view shows image thumbnails, and can
-also show the first page of PDFs, Word, Excel, PowerPoint and text files. Workbooks open in a
+also show the first page of PDFs, Word, RTF, Excel, PowerPoint and text files. Workbooks open in a
 spreadsheet editor that recalculates on the server and keeps formulas intact, and text files open
 in an editor with Markdown preview. Both refuse to overwrite a file that changed since you
 opened it.
@@ -138,7 +138,7 @@ the trash.
 ### Document previews
 
 In **Settings**, **Show document previews in grid view** makes grid cards show the first page of
-PDFs, Word, Excel, PowerPoint, Markdown, CSV and text files instead of an icon. It's off by
+PDFs, Word (including old .doc files), RTF, Excel, PowerPoint, Markdown, CSV and text files instead of an icon. It's off by
 default and saved per browser. PDFs render in the browser, and the code for that only downloads
 when the setting is on.
 

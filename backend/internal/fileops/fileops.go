@@ -153,7 +153,7 @@ func classify(name string, isDir bool) string {
 		return "text"
 	case ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar":
 		return "archive"
-	case ".docx", ".doc", ".odt":
+	case ".docx", ".doc", ".odt", ".rtf":
 		return "doc"
 	case ".pptx", ".ppt":
 		return "slides"

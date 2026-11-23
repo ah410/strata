@@ -1,6 +1,6 @@
 // Package preview pulls a small, text-only peek out of documents for the
 // grid view: the opening of a text file, the corner of a spreadsheet, the
-// first paragraphs of a Word or OpenDocument file, the first slide of a
+// first paragraphs of a Word, RTF or OpenDocument file, the first slide of a
 // deck. Nothing is rendered here; the browser lays it out as a mini page.
 //
 // Files are untrusted. Each format is read through hard caps on how much is
@@ -64,7 +64,7 @@ var textExt = map[string]bool{
 func Supported(name string) bool {
 	ext := strings.ToLower(path.Ext(name))
 	switch ext {
-	case ".csv", ".tsv", ".xlsx", ".xlsm", ".docx", ".odt", ".pptx":
+	case ".csv", ".tsv", ".xlsx", ".xlsm", ".docx", ".odt", ".pptx", ".doc", ".rtf":
 		return true
 	}
 	return textExt[ext]
@@ -101,6 +101,10 @@ func Make(root *safepath.Root, rel string) (*Preview, error) {
 		return &Preview{Type: "table", Rows: rows}, nil
 	case ".csv", ".tsv":
 		return table(f, ext == ".tsv")
+	case ".doc":
+		return wordDoc(f)
+	case ".rtf":
+		return rtf(f)
 	case ".docx", ".odt", ".pptx":
 		zr, err := zip.NewReader(f, fi.Size())
 		if err != nil {

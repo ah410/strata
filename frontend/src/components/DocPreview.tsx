@@ -3,7 +3,7 @@ import { api, type DocPeek, type Entry } from "../lib/api";
 import { pdfThumb } from "../lib/pdfThumb";
 
 /** Which grid cards get a document preview when the setting is on. */
-export const PEEKABLE = /\.(pdf|docx|odt|pptx|xlsx|xlsm|csv|tsv|txt|md|log|json|ya?ml|toml|ini|conf|sh|go|js|ts|tsx|jsx|py|java|kt|rs|c|h|cpp|sql|html|css|xml)$/i;
+export const PEEKABLE = /\.(pdf|docx?|odt|rtf|pptx|xlsx|xlsm|csv|tsv|txt|md|log|json|ya?ml|toml|ini|conf|sh|go|js|ts|tsx|jsx|py|java|kt|rs|c|h|cpp|sql|html|css|xml)$/i;
 
 /**
  * A miniature of a document's first page. It loads once the card scrolls
