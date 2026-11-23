@@ -134,3 +134,76 @@ var compressed = map[string]bool{
 	".mp3": true, ".m4a": true, ".ogg": true, ".opus": true, ".flac": true,
 	".xlsx": true, ".docx": true, ".pptx": true, ".odt": true, ".pdf": true,
 }
+
+// Compress writes the vetted paths as a zip into dir, named after the single
+// item or "Archive", and returns the new file's path. The zip is built in a
+// hidden temp file and only renamed into place when complete.
+func Compress(ctx context.Context, root *safepath.Root, paths []string, dir string, progress func(done, total int64)) (string, error) {
+	dir, err := safepath.User(dir)
+	if err != nil {
+		return "", err
+	}
+	var total int64
+	for _, p := range paths {
+		fs.WalkDir(root.FS().FS(), p, func(_ string, d fs.DirEntry, err error) error {
+			if err == nil && d.Type().IsRegular() {
+				if fi, err := d.Info(); err == nil {
+					total += fi.Size()
+				}
+			}
+			return nil
+		})
+	}
+	if u, err := Usage(root); err == nil && uint64(total) > u.Free {
+		return "", userr.Error("not enough free space for the archive")
+	}
+
+	tmp, tmpName, err := createTemp(root, dir)
+	if err != nil {
+		return "", safepath.Err(err)
+	}
+	defer root.FS().Remove(tmpName) // no-op once renamed
+	w := &progressWriter{w: tmp, total: total, report: progress}
+	if err := Zip(ctx, root, paths, w); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+
+	name := "Archive"
+	if len(paths) == 1 && paths[0] != "." {
+		name = path.Base(paths[0])
+	}
+	for n := 1; n < 10000; n++ {
+		cand := path.Join(dir, name+".zip")
+		if n > 1 {
+			cand = path.Join(dir, name+" ("+strconv.Itoa(n)+").zip")
+		}
+		if _, err := root.FS().Lstat(cand); err == nil {
+			continue
+		}
+		if err := root.FS().Rename(tmpName, cand); err != nil {
+			return "", safepath.Err(err)
+		}
+		return apiPath(cand), nil
+	}
+	return "", userr.Error("too many archives with this name")
+}
+
+type progressWriter struct {
+	w      io.Writer
+	n      int64
+	total  int64
+	report func(done, total int64)
+}
+
+func (p *progressWriter) Write(b []byte) (int, error) {
+	n, err := p.w.Write(b)
+	p.n += int64(n)
+	if p.report != nil {
+		p.report(min(p.n, p.total), p.total)
+	}
+	return n, err
+}

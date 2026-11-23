@@ -1,14 +1,25 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   SCOPES, THEMES, THEME_IDS, setAppearance, setScopeTheme, useAppearance,
   type Scope, type ThemeId,
 } from "../lib/themes";
+import { setPref, usePrefs } from "../lib/prefs";
+import { ACTIONS, type Ctx } from "../lib/actions";
+import { display, NAV_KEYS } from "../lib/keys";
 
 const LIGHT = THEME_IDS.filter((id) => !THEMES[id].dark);
 const DARK = THEME_IDS.filter((id) => THEMES[id].dark);
 
-export function AppearanceDialog({ onClose }: { onClose: () => void }) {
-  const { appearance } = useAppearance();
+export type SettingsSection = "appearance" | "shortcuts";
+
+const SECTIONS: { id: SettingsSection; label: string }[] = [
+  { id: "appearance", label: "Appearance" },
+  { id: "shortcuts", label: "Keyboard shortcuts" },
+];
+
+/** Settings, one section at a time, picked from the list on the left. */
+export function AppearanceDialog({ onClose, start = "appearance" }: { onClose: () => void; start?: SettingsSection }) {
+  const [section, setSection] = useState<SettingsSection>(start);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -18,70 +29,96 @@ export function AppearanceDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="dialog wide" role="dialog" aria-modal="true" aria-label="Appearance">
-        <h3>Appearance</h3>
-
-        <h4>Theme</h4>
-        <div className="theme-grid">
-          <button
-            className="theme-card"
-            aria-pressed={appearance.app === "system"}
-            onClick={() => setAppearance({ app: "system" })}
-          >
-            <span style={{ display: "flex", gap: 3 }}>
-              <span style={{ flex: 1 }}><Swatch id={appearance.systemLight} /></span>
-              <span style={{ flex: 1 }}><Swatch id={appearance.systemDark} /></span>
-            </span>
-            Follow system
-          </button>
-          {THEME_IDS.map((id) => (
-            <button
-              key={id}
-              className="theme-card"
-              aria-pressed={appearance.app === id}
-              onClick={() => setAppearance({ app: id })}
-            >
-              <Swatch id={id} />
-              {THEMES[id].label}
+      <div className="dialog settings" role="dialog" aria-modal="true" aria-label="Settings">
+        <nav className="settings-nav" aria-label="Settings sections">
+          <h3>Settings</h3>
+          {SECTIONS.map((s) => (
+            <button key={s.id} className="settings-tab" aria-current={section === s.id} onClick={() => setSection(s.id)}>
+              {s.label}
             </button>
           ))}
-        </div>
-
-        {appearance.app === "system" && (
-          <>
-            <div className="field-row" style={{ marginTop: 8 }}>
-              <span>When the system is light</span>
-              <ThemeSelect value={appearance.systemLight} ids={LIGHT}
-                onChange={(id) => id && setAppearance({ systemLight: id })} />
-            </div>
-            <div className="field-row">
-              <span>When the system is dark</span>
-              <ThemeSelect value={appearance.systemDark} ids={DARK}
-                onChange={(id) => id && setAppearance({ systemDark: id })} />
-            </div>
-          </>
-        )}
-
-        <h4>By file type</h4>
-        {(Object.keys(SCOPES) as Scope[]).map((scope) => (
-          <div className="field-row" key={scope}>
-            <span>{SCOPES[scope]}</span>
-            <ThemeSelect
-              value={appearance.scopes[scope] ?? null}
-              onChange={(id) => setScopeTheme(scope, id)}
-              allowInherit
-            />
+        </nav>
+        <div className="settings-body">
+          <div className="settings-head">
+            <h3>{SECTIONS.find((s) => s.id === section)!.label}</h3>
+            <button className="btn btn-icon" onClick={onClose} aria-label="Close settings">✕</button>
           </div>
-        ))}
-        <p className="hint">
-          Saved in this browser. PDFs use the browser's own viewer, so only the frame around them changes.
-        </p>
-
-        <div className="dialog-actions" style={{ marginTop: 14 }}>
-          <button className="btn primary" onClick={onClose}>Done</button>
+          {section === "appearance" ? <AppearanceSettings /> : <ShortcutList />}
+          <p className="hint">Settings are saved in this browser.</p>
         </div>
       </div>
     </div>
+  );
+}
+
+function AppearanceSettings() {
+  const { appearance } = useAppearance();
+  const prefs = usePrefs();
+  return (
+    <>
+      <h4>Theme</h4>
+      <div className="theme-grid">
+        <button
+          className="theme-card"
+          aria-pressed={appearance.app === "system"}
+          onClick={() => setAppearance({ app: "system" })}
+        >
+          <span style={{ display: "flex", gap: 3 }}>
+            <span style={{ flex: 1 }}><Swatch id={appearance.systemLight} /></span>
+            <span style={{ flex: 1 }}><Swatch id={appearance.systemDark} /></span>
+          </span>
+          Follow system
+        </button>
+        {THEME_IDS.map((id) => (
+          <button
+            key={id}
+            className="theme-card"
+            aria-pressed={appearance.app === id}
+            onClick={() => setAppearance({ app: id })}
+          >
+            <Swatch id={id} />
+            {THEMES[id].label}
+          </button>
+        ))}
+      </div>
+
+      {appearance.app === "system" && (
+        <>
+          <div className="field-row" style={{ marginTop: 8 }}>
+            <span>When the system is light</span>
+            <ThemeSelect value={appearance.systemLight} ids={LIGHT}
+              onChange={(id) => id && setAppearance({ systemLight: id })} />
+          </div>
+          <div className="field-row">
+            <span>When the system is dark</span>
+            <ThemeSelect value={appearance.systemDark} ids={DARK}
+              onChange={(id) => id && setAppearance({ systemDark: id })} />
+          </div>
+        </>
+      )}
+
+      <h4>By file type</h4>
+      {(Object.keys(SCOPES) as Scope[]).map((scope) => (
+        <div className="field-row" key={scope}>
+          <span>{SCOPES[scope]}</span>
+          <ThemeSelect
+            value={appearance.scopes[scope] ?? null}
+            onChange={(id) => setScopeTheme(scope, id)}
+            allowInherit
+          />
+        </div>
+      ))}
+      <p className="hint">PDFs use the browser's own viewer, so only the frame around them changes.</p>
+
+      <h4>Previews</h4>
+      <label className="field-row toggle">
+        <span>
+          Show document previews in grid view
+          <small>PDFs, Word, Excel, PowerPoint and text files show their first page instead of an icon.</small>
+        </span>
+        <input type="checkbox" role="switch" checked={prefs.previews} onChange={(e) => setPref("previews", e.target.checked)} />
+      </label>
+    </>
   );
 }
 
@@ -120,5 +157,29 @@ function Swatch({ id }: { id: ThemeId }) {
       <i style={{ background: t.green, width: "60%" }} />
       <i style={{ background: t.select, width: "35%" }} />
     </span>
+  );
+}
+
+// A context where every action's label reads naturally on its own.
+const HELP_CTX: Ctx = { selection: [], canStar: true, favorites: new Set(), layout: "list", clipboard: 1 };
+
+function ShortcutList() {
+  const rows = [
+    ...ACTIONS.filter((a) => a.keys).map((a) => ({ keys: a.keys!, label: a.name ?? a.label(HELP_CTX) })),
+    ...NAV_KEYS,
+  ];
+  return (
+    <dl className="shortcuts">
+      {rows.map((r) => (
+        <div key={r.label} className="field-row">
+          <dt>{r.label}</dt>
+          <dd>
+            {r.keys.map((k, i) => (
+              <span key={k}>{i > 0 && <span className="or">or</span>}<kbd>{display(k)}</kbd></span>
+            ))}
+          </dd>
+        </div>
+      ))}
+    </dl>
   );
 }

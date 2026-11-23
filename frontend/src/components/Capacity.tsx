@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type Usage } from "../lib/api";
 import { bytes } from "../lib/format";
+import { StorageDashboard } from "./Storage";
 
 const SEGMENTS = 24;
 
@@ -10,8 +11,9 @@ const SEGMENTS = 24;
  * the number you open the thing to check, so it gets the space to be read at
  * a glance from across the room.
  */
-export function Capacity() {
+export function Capacity({ onNavigate, onOpenTrash }: { onNavigate: (p: string) => void; onOpenTrash: () => void }) {
   const [usage, setUsage] = useState<Usage | null>(null);
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -49,7 +51,8 @@ export function Capacity() {
   const state = ratio >= 0.9 ? "crit" : ratio >= 0.75 ? "warn" : "on";
 
   return (
-    <div className="capacity">
+    <>
+    <button className="capacity" onClick={() => setOpen(true)} aria-haspopup="dialog" title="See what's using space">
       <div className="capacity-top">
         <span className="capacity-label">Capacity</span>
         <span className="capacity-pct">{pct}%</span>
@@ -71,6 +74,8 @@ export function Capacity() {
       <div className="capacity-detail">
         {bytes(usage.free)} free of {bytes(usage.total)}
       </div>
-    </div>
+    </button>
+    {open && <StorageDashboard usage={usage} onClose={() => setOpen(false)} onNavigate={onNavigate} onOpenTrash={onOpenTrash} />}
+    </>
   );
 }

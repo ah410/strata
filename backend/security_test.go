@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"strata/internal/fileops"
 	"strata/internal/safepath"
 	"strata/internal/thumb"
 )
@@ -20,6 +22,7 @@ func testServer(t *testing.T) (http.Handler, string) {
 		t.Fatal(err)
 	}
 	root = r
+	sizer = fileops.NewSizer(root, time.Hour)
 	if thumbs, err = thumb.New(t.TempDir(), 1<<20); err != nil {
 		t.Fatal(err)
 	}

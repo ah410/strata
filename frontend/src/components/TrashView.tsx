@@ -62,31 +62,31 @@ export function TrashView({ toast }: { toast: (text: string, error?: boolean) =>
           </div>
         )}
         {items && items.length > 0 && (
-          <table className="table">
+          <table className="table trash-table">
             <thead>
               <tr>
-                <th>Name</th>
+                <th className="col-name">Name</th>
                 <th className="col-kind">From</th>
                 <th className="col-when">Deleted</th>
                 <th className="num col-size">Size</th>
-                <th style={{ width: 210 }} />
+                <th className="col-acts" />
               </tr>
             </thead>
             <tbody>
               {items.map((it) => (
                 <tr className="row" key={it.id}>
-                  <td>
+                  <td className="col-name">
                     <div className="name">
                       <span className="glyph">
                         <Glyph kind={it.isDir ? "folder" : "file"} />
                       </span>
-                      <span>{it.path.split("/").pop()}</span>
+                      <span className="trash-name" title={it.path}>{it.path.split("/").pop()}</span>
                     </div>
                   </td>
                   <td className="col-kind">/{parentOf(it.path)}</td>
                   <td className="col-when">{when(it.deleted)}</td>
                   <td className="col-size">{it.isDir ? "—" : bytes(it.size)}</td>
-                  <td style={{ textAlign: "right" }}>
+                  <td className="col-acts">
                     <button className="btn" onClick={() => act(() => api.restore(it.id), `Restored ${it.path}`)}>
                       Restore
                     </button>{" "}

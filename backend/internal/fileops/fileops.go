@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -322,6 +323,95 @@ func Save(root *safepath.Root, rel string, r io.Reader) error {
 		_, err := io.Copy(w, r)
 		return err
 	})
+}
+
+// Staged is a file written to a hidden temp file but not yet synced or
+// moved into place. CommitAll finishes a batch of them.
+type Staged struct {
+	root    *safepath.Root
+	tmp     *os.File
+	tmpName string
+	rel     string
+}
+
+// Stage writes r to a temp file beside rel without syncing it.
+func Stage(root *safepath.Root, rel string, r io.Reader) (*Staged, error) {
+	if _, err := safepath.User(rel); err != nil {
+		return nil, err
+	}
+	rel = safepath.Clean(rel)
+	if rel == "." {
+		return nil, userr.Error("invalid file name")
+	}
+	dir := path.Dir(rel)
+	if err := root.FS().MkdirAll(dir, 0o755); err != nil {
+		return nil, safepath.Err(err)
+	}
+	tmp, tmpName, err := createTemp(root, dir)
+	if err != nil {
+		return nil, safepath.Err(err)
+	}
+	s := &Staged{root, tmp, tmpName, rel}
+	if _, err := io.Copy(tmp, r); err != nil {
+		s.Discard()
+		return nil, err
+	}
+	return s, nil
+}
+
+// Discard removes a staged file that won't be committed.
+func (s *Staged) Discard() {
+	s.tmp.Close()
+	s.root.FS().Remove(s.tmpName)
+}
+
+// CommitAll syncs every staged file in parallel, so the filesystem can
+// batch the flushes, then renames each into place in order.
+func CommitAll(staged []*Staged) error {
+	errs := make([]error, len(staged))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 16)
+	for i, s := range staged {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			if err := s.tmp.Sync(); err != nil {
+				errs[i] = err
+			}
+		}()
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		for _, s := range staged {
+			s.Discard()
+		}
+		return err
+	}
+	for i, s := range staged {
+		err := s.tmp.Close()
+		if err == nil {
+			err = safepath.Err(replace(s.root, s.tmpName, s.rel))
+		}
+		if err != nil {
+			s.root.FS().Remove(s.tmpName)
+			for _, rest := range staged[i+1:] {
+				rest.Discard()
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// syncFile flushes rel to disk.
+func syncFile(root *safepath.Root, rel string) error {
+	f, err := root.FS().OpenFile(rel, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
 }
 
 // WriteAtomic creates rel's contents through write, then renames the result

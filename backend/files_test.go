@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"mime/multipart"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func multipartUpload(t *testing.T, parts [][2]string) (string, string) {
@@ -99,4 +101,129 @@ func TestChunkedUploadOverHTTP(t *testing.T) {
 type httptestRec struct {
 	code int
 	off  string
+}
+
+func waitJob(t *testing.T, h http.Handler, id string) map[string]any {
+	t.Helper()
+	for range 400 {
+		rec := do(h, "GET", "/api/jobs/"+id, "strata.example.com", "", nil)
+		var j map[string]any
+		json.Unmarshal(rec.Body.Bytes(), &j)
+		if s := j["state"]; s != "queued" && s != "running" {
+			return j
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("job never finished")
+	return nil
+}
+
+func TestExtractOverHTTP(t *testing.T) {
+	h, dir := testServer(t)
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	f, _ := zw.Create("inner/a.txt")
+	f.Write([]byte("hello"))
+	zw.Close()
+	os.MkdirAll(filepath.Join(dir, "dl"), 0o755)
+	os.WriteFile(filepath.Join(dir, "dl/takeout.zip"), buf.Bytes(), 0o644)
+
+	hdr := map[string]string{"Content-Type": "application/json", "X-Strata": "1"}
+	rec := do(h, "POST", "/api/extract", "strata.example.com", `{"path":"dl/takeout.zip"}`, hdr)
+	if rec.Code != 200 {
+		t.Fatalf("extract: %d %s", rec.Code, rec.Body)
+	}
+	var start struct{ Job string }
+	json.Unmarshal(rec.Body.Bytes(), &start)
+	j := waitJob(t, h, start.Job)
+	if j["state"] != "done" || j["result"] != "dl/takeout" {
+		t.Fatalf("job = %v", j)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "dl/takeout/inner/a.txt")); string(b) != "hello" {
+		t.Fatalf("extracted = %q", b)
+	}
+
+	// Bad requests fail up front, not as a job.
+	for _, body := range []string{`{"path":"dl/nope.zip"}`, `{"path":"dl/takeout"}`, `{"path":"../x.zip"}`} {
+		if rec := do(h, "POST", "/api/extract", "strata.example.com", body, hdr); rec.Code == 200 {
+			t.Errorf("%s accepted", body)
+		}
+	}
+	if rec := do(h, "GET", "/api/jobs/nope", "strata.example.com", "", nil); rec.Code != 404 {
+		t.Errorf("unknown job: %d", rec.Code)
+	}
+}
+
+func TestPreviewOverHTTP(t *testing.T) {
+	h, dir := testServer(t)
+	os.WriteFile(filepath.Join(dir, "n.md"), []byte("# hi\nthere"), 0o644)
+	os.WriteFile(filepath.Join(dir, "p.bin"), []byte("x"), 0o644)
+	rec := do(h, "GET", "/api/preview?path=n.md&m=1", "strata.example.com", "", nil)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"lines":["# hi","there"]`) {
+		t.Fatalf("preview: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(h, "GET", "/api/preview?path=p.bin", "strata.example.com", "", nil); rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("unsupported: %d", rec.Code)
+	}
+	if rec := do(h, "GET", "/api/preview?path=.strata/x.md", "strata.example.com", "", nil); rec.Code != http.StatusForbidden {
+		t.Fatalf("internal: %d", rec.Code)
+	}
+}
+
+func TestCompressOverHTTP(t *testing.T) {
+	h, dir := testServer(t)
+	os.MkdirAll(filepath.Join(dir, "a"), 0o755)
+	os.WriteFile(filepath.Join(dir, "a/f.txt"), []byte("f"), 0o644)
+	hdr := map[string]string{"Content-Type": "application/json", "X-Strata": "1"}
+	rec := do(h, "POST", "/api/compress", "strata.example.com", `{"paths":["a"],"dir":""}`, hdr)
+	if rec.Code != 200 {
+		t.Fatalf("compress: %d %s", rec.Code, rec.Body)
+	}
+	var start struct{ Job string }
+	json.Unmarshal(rec.Body.Bytes(), &start)
+	if j := waitJob(t, h, start.Job); j["state"] != "done" || j["result"] != "a.zip" {
+		t.Fatalf("job = %v", j)
+	}
+	for _, body := range []string{`{"paths":[],"dir":""}`, `{"paths":["a"],"dir":"a/f.txt"}`, `{"paths":["a"],"dir":".strata"}`, `{"paths":["../a"],"dir":"nope"}`} {
+		if rec := do(h, "POST", "/api/compress", "strata.example.com", body, hdr); rec.Code == 200 {
+			t.Errorf("%s accepted", body)
+		}
+	}
+}
+
+func TestInfoAndChecksumOverHTTP(t *testing.T) {
+	h, dir := testServer(t)
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("hello\n"), 0o644)
+	rec := do(h, "GET", "/api/info?path=f.txt", "strata.example.com", "", nil)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"type":"text/plain"`) {
+		t.Fatalf("info: %d %s", rec.Code, rec.Body)
+	}
+	hdr := map[string]string{"Content-Type": "application/json", "X-Strata": "1"}
+	rec = do(h, "POST", "/api/checksum", "strata.example.com", `{"path":"f.txt"}`, hdr)
+	var start struct{ Job string }
+	json.Unmarshal(rec.Body.Bytes(), &start)
+	if j := waitJob(t, h, start.Job); j["result"] != "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03" {
+		t.Fatalf("job = %v", j)
+	}
+	if rec := do(h, "POST", "/api/checksum", "strata.example.com", `{"path":""}`, hdr); rec.Code == 200 {
+		t.Fatal("root checksummed")
+	}
+}
+
+func TestDuplicatesOverHTTP(t *testing.T) {
+	h, dir := testServer(t)
+	os.WriteFile(filepath.Join(dir, "a.bin"), []byte("same"), 0o644)
+	os.WriteFile(filepath.Join(dir, "b.bin"), []byte("same"), 0o644)
+	hdr := map[string]string{"Content-Type": "application/json", "X-Strata": "1"}
+	rec := do(h, "POST", "/api/duplicates", "strata.example.com", `{"path":"","minSize":1}`, hdr)
+	var start struct{ Job string }
+	json.Unmarshal(rec.Body.Bytes(), &start)
+	j := waitJob(t, h, start.Job)
+	groups, _ := j["result"].([]any)
+	if j["state"] != "done" || len(groups) != 1 {
+		t.Fatalf("job = %v", j)
+	}
+	if rec := do(h, "POST", "/api/duplicates", "strata.example.com", `{"path":"a.bin"}`, hdr); rec.Code == 200 {
+		t.Fatal("file accepted as a folder")
+	}
 }
