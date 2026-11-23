@@ -1,5 +1,5 @@
 # Strata: a sample stack for Dockge or `docker compose up -d`.
-# See "Install" in the README for the TrueNAS and Dockge walkthrough.
+# See "Install" in the README for setup steps.
 
 services:
   strata:

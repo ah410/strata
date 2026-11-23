@@ -65,29 +65,8 @@ docker logs strata 2>&1 | grep "SETUP CODE"
 Open `https://<your-nas>:8443`, accept the self-signed certificate (the logs print its
 fingerprint so you can check it), enter the code, and choose a passphrase.
 
-### Dockge
-
-This is how I run it on my own TrueNAS box.
-
-1. In TrueNAS, create a user for Strata with no login access (note its uid and gid), and give it
-   a **Modify** entry with **Inherit** on the dataset's ACL.
-2. In Dockge, click **+ Compose** and name the stack `strata`.
-3. Paste [docker-compose.yml](docker-compose.yml) into the compose editor. Dockge also shows an
-   `.env` box below it; leave that empty, the YAML goes in the compose editor only. Set `user:` to
-   the uid:gid from step 1, the left side of the `/data` volume to your dataset, and the config
-   volume to `./config` so it lives in the stack's folder.
-4. Create that config folder for the user before the first deploy, from the TrueNAS shell. With
-   the TrueNAS Dockge app, stacks usually live under `/mnt/.ix-apps/app_mounts/dockge/stacks`:
-
-   ```sh
-   cd /mnt/.ix-apps/app_mounts/dockge/stacks/strata
-   sudo mkdir -p config && sudo chown <uid>:<gid> config
-   ```
-
-5. Click **Deploy**. The setup code is in the stack's log panel in Dockge; open the Web UI, enter
-   it, and choose a passphrase.
-
-To upgrade later, change the image tag in the compose file and click **Update**.
+The same file works as a stack in Dockge or Portainer: paste it into a new stack, set the same
+values, and deploy.
 
 > **Behind Nginx Proxy Manager?** Raise NPM's request size limit or large uploads slow down.
 > Strata still works with NPM's defaults, but see
