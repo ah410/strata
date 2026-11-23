@@ -414,6 +414,11 @@ button { font: inherit; color: inherit; }
 .col-kind { width: 84px; color: var(--ink-faint); font-size: 11.5px; }
 .col-pick { width: 34px; }
 
+/* Long names shrink with an ellipsis so the buttons always fit. */
+.trash-table .col-name { width: 100%; max-width: 0; }
+.trash-table .col-acts { width: 1%; white-space: nowrap; text-align: right; }
+.trash-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .pick {
   width: 14px; height: 14px;
   accent-color: var(--select);
