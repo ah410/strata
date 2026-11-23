@@ -180,10 +180,8 @@ func WriteChunk(root *safepath.Root, id string, offset int64, r io.Reader) (int6
 		f.Truncate(cur)
 		return cur, err
 	}
-	if err := f.Sync(); err != nil {
-		f.Truncate(cur)
-		return cur, err
-	}
+	// No fsync per chunk: FinishUpload syncs once, and after a crash the
+	// client resumes from whatever offset survived.
 	return cur + n, nil
 }
 
@@ -201,6 +199,9 @@ func FinishUpload(root *safepath.Root, id string) (string, error) {
 	}
 	if fi.Size() != u.Size {
 		return "", userr.Error("upload is incomplete")
+	}
+	if err := syncFile(root, u.part()); err != nil {
+		return "", safepath.Err(err)
 	}
 	// The record is data from disk; vet it like a request.
 	rel, err := safepath.User(u.Path)

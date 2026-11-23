@@ -14,6 +14,7 @@ const BATCH_BYTES = 8 << 20;
 const BATCH_FILES = 200;
 const MIN_CHUNK = 256 << 10;
 const RETRIES = 6;
+const PARALLEL = 4;
 
 // Shrinks for the rest of the session once a proxy rejects a request as too
 // big, so only the first request learns the limit the hard way.
@@ -46,37 +47,74 @@ export async function uploadAll(dir: string, items: UploadItem[], opts: UploadOp
   const total = items.reduce((n, i) => n + i.file.size, 0);
   let sent = 0;
   let done = 0;
-  // Multipart progress counts form overhead too; never report past a batch.
-  const report = (inFlight: number, cap: number) =>
-    opts.onProgress?.({ sent: sent + Math.min(inFlight, cap), total, files: items.length, done });
-  const landed = (files: number, bytes: number) => {
-    done += files;
-    sent += bytes;
-    report(0, 0);
-    opts.onLanded?.();
+  // Bytes in flight per running task.
+  const flying = new Map<number, number>();
+  const progress = () => {
+    let inFlight = 0;
+    for (const n of flying.values()) inFlight += n;
+    opts.onProgress?.({ sent: sent + inFlight, total, files: items.length, done });
   };
-  ctx = { signal: opts.signal };
+  ctx = { signal: opts.signal, halted: false };
 
   const small = items.filter((i) => i.file.size < CHUNKED_FROM);
   const big = items.filter((i) => i.file.size >= CHUNKED_FROM);
+  // Batches are cut when taken, so they follow a requestCap a 413 lowered.
+  let si = 0;
+  let bi = 0;
+  const take = () => {
+    if (si < small.length) {
+      const files = small.slice(si, (si = nextBatch(small, si, requestCap, BATCH_FILES)));
+      return { files, bytes: files.reduce((n, i) => n + i.file.size, 0), big: false };
+    }
+    if (bi < big.length) {
+      const item = big[bi++];
+      return { files: [item], bytes: item.file.size, big: true };
+    }
+    return null;
+  };
 
-  report(0, 0);
-  for (let i = 0; i < small.length; ) {
-    const batch = small.slice(i, nextBatch(small, i, requestCap, BATCH_FILES));
-    i += batch.length;
-    const bytes = batch.reduce((n, i) => n + i.file.size, 0);
-    await multipartOrSplit(dir, batch, (n) => report(n, bytes));
-    landed(batch.length, bytes);
-  }
-  for (const item of big) {
-    await chunked(dir, item, (n) => report(n, item.file.size));
-    landed(1, item.file.size);
-  }
+  // A few requests at once hide each one's round trip and server write.
+  let next = 0;
+  let failure: unknown;
+  const worker = async () => {
+    while (failure === undefined) {
+      const t = take();
+      if (!t) return;
+      const id = next++;
+      // Multipart progress counts form overhead too; never report past a task.
+      const report = (n: number) => {
+        flying.set(id, Math.min(n, t.bytes));
+        progress();
+      };
+      try {
+        if (t.big) await chunked(dir, t.files[0], report);
+        else await multipartOrSplit(dir, t.files, report);
+      } catch (e) {
+        if (failure === undefined) failure = e;
+        ctx.halted = true;
+        return;
+      } finally {
+        flying.delete(id);
+      }
+      done += t.files.length;
+      sent += t.bytes;
+      progress();
+      opts.onLanded?.();
+    }
+  };
+
+  progress();
+  await Promise.all(Array.from({ length: PARALLEL }, worker));
+  if (failure !== undefined) throw failure;
   return items.length;
 }
 
-// The running upload's cancel signal; one upload runs at a time.
-let ctx: { signal?: AbortSignal } = {};
+/** Stops a chunked upload between chunks after another task failed; keeps it resumable. */
+class Halted extends Error {}
+
+// The running upload's cancel signal; one upload runs at a time. halted is
+// set when one of its tasks fails, so the others stop starting new work.
+let ctx: { signal?: AbortSignal; halted: boolean } = { halted: false };
 const checkCanceled = () => {
   if (ctx.signal?.aborted) throw new Canceled();
 };
@@ -164,6 +202,7 @@ async function chunked(dir: string, { file, rel }: UploadItem, report: (n: numbe
   };
   while (offset < file.size) {
     if (ctx.signal?.aborted) throw cancel();
+    if (ctx.halted) throw new Halted();
     chunk = Math.min(chunk, requestCap);
     const end = Math.min(offset + chunk, file.size);
     const base = offset;

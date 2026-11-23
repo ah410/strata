@@ -102,3 +102,42 @@ func TestListReportsRootAsEmptyPath(t *testing.T) {
 		t.Errorf("listing = %+v", l)
 	}
 }
+
+func TestStagedBatchCommitsTogether(t *testing.T) {
+	root, dir := share(t)
+	write(t, dir, "a.txt", "old")
+	var batch []*Staged
+	for _, f := range []struct{ rel, body string }{{"a.txt", "new"}, {"sub/b.txt", "b"}} {
+		s, err := Stage(root, f.rel, strings.NewReader(f.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		batch = append(batch, s)
+	}
+	if read(t, dir, "a.txt") != "old" {
+		t.Fatal("changed before commit")
+	}
+	if err := CommitAll(batch); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, dir, "a.txt") != "new" || read(t, dir, "sub/b.txt") != "b" {
+		t.Fatal("batch not committed")
+	}
+	if vs, _ := ListVersions(root, "a.txt"); len(vs) != 1 {
+		t.Fatalf("replaced file kept %d versions, want 1", len(vs))
+	}
+
+	s, err := Stage(root, "gone.txt", strings.NewReader("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Discard()
+	for _, d := range []string{dir, filepath.Join(dir, "sub")} {
+		if left, _ := filepath.Glob(filepath.Join(d, ".strata-*")); len(left) != 0 {
+			t.Fatalf("temp files left behind: %v", left)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "gone.txt")); err == nil {
+		t.Fatal("discarded file was written")
+	}
+}

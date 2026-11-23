@@ -42,6 +42,9 @@
   proxy. Small files used to go up in one request per upload, which a folder
   of thousands of photos turned into gigabytes; requests now stay around 8 MB
   and shrink further if the proxy still refuses them.
+- Uploads are faster. Up to four requests run at once instead of one after
+  another, and the server flushes each file to disk once when it's complete
+  instead of after every 8 MB piece or every small file.
 - A single upload can now be as large as the free space on the dataset,
   rather than 8 GB, so 10 GB and 50 GB Takeout archives fit.
 - Error pages from a proxy show as a sentence instead of raw HTML.

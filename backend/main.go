@@ -713,6 +713,13 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	saved := []string{}
+	// Written as the request streams in, synced together at the end.
+	var staged []*fileops.Staged
+	discard := func() {
+		for _, s := range staged {
+			s.Discard()
+		}
+	}
 	relPath := "" // from a "relpath" field sent just before its file
 	for {
 		part, err := reader.NextPart()
@@ -720,6 +727,7 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
+			discard()
 			fail(w, err)
 			return
 		}
@@ -742,20 +750,27 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 		rel, err := uploadName(name)
 		if err != nil {
 			part.Close()
+			discard()
 			fail(w, err)
 			return
 		}
 		dest := path.Join(dir, rel)
 
-		err = fileops.Save(root, dest, part)
+		s, err := fileops.Stage(root, dest, part)
 		part.Close()
 		if err != nil {
+			discard()
 			fail(w, err)
 			return
 		}
+		staged = append(staged, s)
 		saved = append(saved, dest)
 	}
 
+	if err := fileops.CommitAll(staged); err != nil {
+		fail(w, err)
+		return
+	}
 	writeJSON(w, map[string]any{"saved": saved})
 }
 

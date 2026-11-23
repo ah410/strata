@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { batches, fromPaste, type UploadItem } from "./upload";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { batches, fromPaste, uploadAll, type UploadItem } from "./upload";
 
 const item = (rel: string, size: number): UploadItem => ({ rel, file: { name: rel, size } as File });
 const shape = (b: UploadItem[][]) => b.map((g) => g.map((i) => i.rel));
@@ -39,5 +39,54 @@ describe("fromPaste", () => {
       "Pasted image 2026-10-28 09.05.07 (2).png",
       "report.pdf",
     ]);
+  });
+});
+
+describe("uploadAll", () => {
+  // A fake XHR that answers each request on the next tick with status().
+  function fakeServer(status: (n: number) => number) {
+    const log = { started: 0, active: 0, peak: 0, afterFailure: 0, failed: false };
+    vi.stubGlobal("FormData", class { append() {} });
+    vi.stubGlobal(
+      "XMLHttpRequest",
+      class {
+        status = 0;
+        responseText = "";
+        upload: { onprogress?: (e: { loaded: number }) => void } = {};
+        onload?: () => void;
+        open() {}
+        setRequestHeader() {}
+        getResponseHeader() { return null; }
+        send() {
+          const n = log.started++;
+          if (log.failed) log.afterFailure++;
+          log.peak = Math.max(log.peak, ++log.active);
+          setTimeout(() => {
+            log.active--;
+            this.status = status(n);
+            if (this.status >= 400) log.failed = true;
+            this.onload?.();
+          }, 1);
+        }
+      },
+    );
+    return log;
+  }
+  const files = (k: number) => Array.from({ length: k }, (_, i) => item(`f${i}`, 5 << 20));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("keeps up to four requests in flight and lands every file", async () => {
+    const log = fakeServer(() => 200);
+    let landed = 0;
+    expect(await uploadAll("/", files(10), { onLanded: () => landed++ })).toBe(10);
+    expect(log.peak).toBe(4);
+    expect(landed).toBe(10);
+  });
+
+  it("starts nothing new once a request fails", async () => {
+    const log = fakeServer((n) => (n === 0 ? 500 : 200));
+    await expect(uploadAll("/", files(10))).rejects.toThrow();
+    expect(log.afterFailure).toBe(0);
+    expect(log.started).toBe(4);
   });
 });
