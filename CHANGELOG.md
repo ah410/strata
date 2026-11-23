@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.0 (2026-10-28)
+## 1.1.0 (2026-11-23)
 
 ### Files
 - A right-click menu for files and for empty space in a folder. Shift+right-click
@@ -48,6 +48,14 @@
 - A single upload can now be as large as the free space on the dataset,
   rather than 8 GB, so 10 GB and 50 GB Takeout archives fit.
 - Error pages from a proxy show as a sentence instead of raw HTML.
+- The upload counter and bar move at a steady pace instead of stalling and
+  jumping while the server's disk catches up.
+- Restore and Delete forever stay visible in the trash in narrow windows;
+  long names are shortened instead.
+
+### Security
+- Go 1.27.4, which fixes a `net/http` vulnerability (GO-2026-6859) that
+  Strata's code reaches, and golang.org/x/net 0.62.0.
 
 ## 1.0.2 (2026-10-27)
 
