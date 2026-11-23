@@ -114,8 +114,7 @@ opened it.
 
 Everything has a right-click menu and a keyboard shortcut, and Ctrl+K jumps to any file or runs
 any action. Clicking the capacity meter shows which folders and files fill the pool and finds
-duplicate files. There are favorites, recent files, light and dark themes chosen per file type,
-and an optional WebDAV mount so the share works as a network drive.
+duplicate files. There are favorites, recent files, and light and dark themes chosen per file type.
 
 Nothing you do in the browser is final. Deleting goes to a trash with Undo, and every file Strata
 replaces keeps its previous versions.
@@ -202,17 +201,6 @@ discard all trash and history for that dataset. Partial uploads wait in the same
 cleaned up after a day. None of this replaces ZFS snapshots, which also cover changes made outside
 Strata.
 
-### Mounting it as a drive (WebDAV)
-
-Set `STRATA_WEBDAV=on` and the share is also served over WebDAV at `/dav/`. Connect to
-`https://<your-nas>:8443/dav/` from Finder (Go, Connect to Server), Windows (Map network drive), a
-Linux file manager (`davs://`), or a phone app. Any user name works; the password is your Strata
-passphrase.
-
-It follows the same rules as the web UI: deleting moves items to the trash, overwriting keeps the
-previous version, an upload that breaks off halfway leaves the old file alone, and the `.strata`
-folder doesn't appear. It's off by default because it's another way in.
-
 ## How it protects your files
 
 Strata asks for a passphrase before showing anything. There are no user accounts: one
@@ -282,7 +270,6 @@ works over HTTPS (or on localhost).
 | `STRATA_PASSWORD_FILE` | *(none)* | A hash from `strata hash-password`, used instead of first-run setup. |
 | `STRATA_AUTH` | `passphrase` | `none` disables sign-in. Only for networks you fully trust. |
 | `STRATA_TRASH_DAYS` | `30` | Days a deleted item stays restorable. |
-| `STRATA_WEBDAV` | `off` | `on` serves the share over WebDAV at `/dav/`. |
 | `TZ` | `Etc/UTC` | Zone for log timestamps. The UI shows times in the browser's zone. |
 
 ### Which user it runs as
@@ -350,7 +337,6 @@ backend/
                        trash, versions, storage scan, duplicates
   internal/jobs/       background jobs the UI polls for progress
   internal/preview/    text peeks of documents for grid previews
-  internal/dav/        the WebDAV mount
   internal/sheet/      xlsx read and write via excelize
   internal/thumb/      image thumbnails and their cache
   internal/state/      favorites and recent files

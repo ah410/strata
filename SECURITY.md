@@ -34,8 +34,7 @@ Markdown; request forgery; bypassing the sign-in throttle; and denial of
 service from a single small request (image bombs, zip bombs, unbounded
 walks).
 
-That includes the WebDAV mount when `STRATA_WEBDAV=on`, and archives
-extracted with **Extract here**.
+That includes archives extracted with **Extract here**.
 
 Out of scope: attacks that need the passphrase or the container's logs (the
 first-run setup code is printed there by design), and deployments with
@@ -58,13 +57,6 @@ or use absolute paths, skips symlinks and hard links, counts inflated bytes
 as they're written against the free space, and builds the result in a hidden
 folder that is renamed into place only when it's complete. Document previews
 read through fixed caps on file size and on how much is decompressed.
-
-WebDAV uses HTTP Basic auth over HTTPS with the same passphrase and
-throttle as the web UI. It refuses POST, and any request carrying a
-cross-site `Origin` or fetch metadata, so a web page can't drive it; its
-other methods need a CORS preflight that Strata never grants. Files it
-serves get the same sandboxing headers as in the UI and are sent as
-downloads.
 
 CI runs CodeQL, govulncheck, gitleaks and Snyk, and every third-party
 action is pinned to a commit.

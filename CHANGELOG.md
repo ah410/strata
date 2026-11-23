@@ -37,10 +37,6 @@
 - An optional setting (off by default) shows the first page of PDFs, Word,
   Excel, PowerPoint and text files in grid view.
 
-### WebDAV
-- With `STRATA_WEBDAV=on`, mount the share as a network drive at `/dav/`.
-  Deletes go to the trash and overwrites keep the previous version.
-
 ### Fixes
 - Uploads no longer fail with "413 Request Entity Too Large" behind a reverse
   proxy. Small files used to go up in one request per upload, which a folder
