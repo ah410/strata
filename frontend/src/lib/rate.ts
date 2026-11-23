@@ -20,6 +20,18 @@ export class Rate {
   }
 }
 
+/**
+ * Advances a displayed byte count toward the real one at the average speed,
+ * so bursts and stalls from disk flushes read as steady progress. Never
+ * passes real, and catches up faster when more than two seconds behind.
+ */
+export function smoothStep(shown: number, real: number, perSecond: number, dtMs: number): number {
+  if (perSecond <= 0 || shown > real) return real;
+  const gap = real - shown;
+  const speed = Math.max(perSecond, gap / 2);
+  return Math.min(real, shown + (speed * dtMs) / 1000);
+}
+
 /** "about 34 min left" style estimate, or "" while unknown. */
 export function timeLeft(remaining: number, perSecond: number): string {
   if (perSecond <= 0) return "";
