@@ -106,12 +106,13 @@ func rtf(r io.Reader) (*Preview, error) {
 			case word == "tab" || word == "cell":
 				cur.WriteByte(' ')
 			case word == "uc" && hasArg:
-				ucN = arg
+				ucN = min(max(arg, 0), 8)
 			case word == "u" && hasArg:
-				if arg < 0 {
-					arg += 65536
+				// \uN is a signed 16-bit code unit; ignore anything else.
+				if arg < -32768 || arg > 65535 {
+					break
 				}
-				cur.WriteRune(rune(arg))
+				cur.WriteRune(rune(uint16(arg)))
 				drop = ucN
 			case word == "emdash", word == "endash":
 				cur.WriteString("-")

@@ -27,6 +27,18 @@ Cocoa line break.\par
 	}
 }
 
+func TestRTFUnicodeBounds(t *testing.T) {
+	// Out-of-range \uN is ignored, negative values wrap to 16 bits, \ucN is clamped.
+	in := strings.ReplaceAll(`{\rtf1 a@u-4?b@u9999999999?c@uc999999999 d@uc1 @u65?e\par}`, "@u", "\\u")
+	p, err := rtf(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "a" + string(rune(0xFFFC)) + "b?cdAe"; p.Blocks[0].Text != want {
+		t.Fatalf("got %q, want %q", p.Blocks[0].Text, want)
+	}
+}
+
 func TestRTFRejectsNonRTF(t *testing.T) {
 	root, dir := setup(t)
 	put(t, dir, "fake.rtf", []byte("just text"))
