@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build Strata from this checkout and run it in Docker, set up like a real
-# install, to try a branch before merging it. See "Testing a branch" in the README.
+# install, to try a branch before merging it. See CONTRIBUTING.md.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
