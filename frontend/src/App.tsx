@@ -12,7 +12,7 @@ import { AppearanceDialog, type SettingsSection } from "./components/Appearance"
 import { History } from "./components/History";
 import { TrashView } from "./components/TrashView";
 import { FolderPicker } from "./components/FolderPicker";
-import { FileGrid } from "./components/FileGrid";
+import { CardSizeSlider, FileGrid } from "./components/FileGrid";
 import { TextEditor } from "./components/TextEditor";
 import { actionForKey, actionsFor, type ActionId, type Ctx } from "./lib/actions";
 import { combo, display, step, typeahead, TYPEAHEAD_MS } from "./lib/keys";
@@ -858,9 +858,12 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
             {actionsFor(ctx(pickedEntries), "toolbar").map((a) => {
               const c = ctx(pickedEntries);
               return a.id === "layout" ? (
-                <button key={a.id} className="btn btn-icon" onClick={() => perform(a.id, [])} aria-label={a.label(c)} title={a.label(c)}>
-                  {layout === "list" ? "▦" : "☰"}
-                </button>
+                <span key={a.id} className="layout-tools">
+                  {layout === "grid" && <CardSizeSlider />}
+                  <button className="btn btn-icon" onClick={() => perform(a.id, [])} aria-label={a.label(c)} title={a.label(c)}>
+                    {layout === "list" ? "▦" : "☰"}
+                  </button>
+                </span>
               ) : (
                 <button
                   key={a.id}

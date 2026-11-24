@@ -9,7 +9,7 @@ export const PEEKABLE = /\.(pdf|docx?|odt|rtf|pptx|xlsx|xlsm|csv|tsv|txt|md|log|
  * A miniature of a document's first page. It loads once the card scrolls
  * into view and calls onFail so the card can fall back to its icon.
  */
-export function DocPreview({ entry, onFail }: { entry: Entry; onFail: () => void }) {
+export function DocPreview({ entry, onFail, width = 220 }: { entry: Entry; onFail: () => void; width?: number }) {
   const ref = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   const [peek, setPeek] = useState<DocPeek | null>(null);
@@ -28,10 +28,10 @@ export function DocPreview({ entry, onFail }: { entry: Entry; onFail: () => void
     if (!visible) return;
     let alive = true;
     const fail = () => alive && onFail();
-    if (isPdf) pdfThumb(api.rawUrl(entry.path) + `&m=${encodeURIComponent(entry.modified)}`, 220).then((u) => alive && setPdf(u), fail);
+    if (isPdf) pdfThumb(api.rawUrl(entry.path) + `&m=${encodeURIComponent(entry.modified)}`, width).then((u) => alive && setPdf(u), fail);
     else api.peek(entry).then((p) => alive && setPeek(p), fail);
     return () => { alive = false; };
-  }, [visible, entry.path, entry.modified]);
+  }, [visible, entry.path, entry.modified, width]);
 
   return (
     <div ref={ref} className={`peek peek-${isPdf ? "pdf" : peek?.type ?? "loading"}`} aria-hidden="true">

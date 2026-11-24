@@ -3,7 +3,7 @@ import {
   SCOPES, THEMES, THEME_IDS, setAppearance, setScopeTheme, useAppearance,
   type Scope, type ThemeId,
 } from "../lib/themes";
-import { setPref, usePrefs } from "../lib/prefs";
+import { CARD_SIZES, setPref, usePrefs } from "../lib/prefs";
 import { ACTIONS, type Ctx } from "../lib/actions";
 import { display, NAV_KEYS } from "../lib/keys";
 
@@ -110,11 +110,19 @@ function AppearanceSettings() {
       ))}
       <p className="hint">PDFs use the browser's own viewer, so only the frame around them changes.</p>
 
-      <h4>Previews</h4>
+      <h4>Grid view</h4>
+      <div className="field-row">
+        <span>Card size</span>
+        <select className="select" value={prefs.cardSize} aria-label="Card size" onChange={(e) => setPref("cardSize", Number(e.target.value))}>
+          {CARD_SIZES.map((c, i) => (
+            <option key={c.label} value={i}>{c.label}</option>
+          ))}
+        </select>
+      </div>
       <label className="field-row toggle">
         <span>
           Show document previews in grid view
-          <small>PDFs, Word, Excel, PowerPoint and text files show their first page instead of an icon.</small>
+          <small>PDFs, Word, RTF, Excel, PowerPoint and text files show their first page instead of an icon.</small>
         </span>
         <input type="checkbox" role="switch" checked={prefs.previews} onChange={(e) => setPref("previews", e.target.checked)} />
       </label>
