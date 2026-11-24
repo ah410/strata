@@ -904,12 +904,6 @@ table.grid td input:focus { outline: none; }
 .toast.err .toast-dot { background: var(--crit); }
 .toast-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex: none; }
 
-.progress {
-  height: 2px;
-  background: var(--select);
-  transition: width 140ms linear;
-}
-
 /* ─── search, move, drag ─────────────────────────────────────────────────── */
 
 .search { flex: 0 1 220px; min-width: 120px; }
@@ -1288,12 +1282,18 @@ kbd {
 }
 
 /* ─── upload progress ───────────────────────────────────────────────────── */
-.upload-panel {
+.panel-stack {
   position: fixed;
   right: 16px;
   bottom: 16px;
   z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   width: min(340px, calc(100vw - 32px));
+}
+
+.upload-panel {
   padding: 12px 14px;
   background: var(--surface);
   border: 1px solid var(--line);
@@ -1308,4 +1308,4 @@ kbd {
 .upload-bar span { display: block; height: 100%; background: var(--select); transition: width 0.2s linear; }
 .upload-nums { display: flex; justify-content: space-between; gap: 10px; color: var(--ink); font-variant-numeric: tabular-nums; }
 .upload-nums.dim { margin-top: 2px; color: var(--ink-faint); }
-@media (max-width: 640px) { .upload-panel { bottom: 70px; } }
+@media (max-width: 640px) { .panel-stack { bottom: 70px; } }

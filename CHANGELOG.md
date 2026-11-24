@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1 (2026-11-23)
+
+- Grid previews now cover old Word `.doc` files (Word 97 to 2003) and RTF.
+- Extracting and compressing show a progress panel in the corner, like
+  uploads, with size done, percent, speed, time left and a Cancel button.
+
 ## 1.1.0 (2026-11-23)
 
 ### Files
