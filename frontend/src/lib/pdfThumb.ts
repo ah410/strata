@@ -26,13 +26,14 @@ function pdfjs() {
   return lib;
 }
 
-/** An object URL for page 1 of the PDF at url, width px wide. Cached per URL. */
+/** An object URL for page 1 of the PDF at url, width px wide. Cached per URL and width. */
 export function pdfThumb(url: string, width: number): Promise<string> {
-  let p = cache.get(url);
+  const key = `${width}|${url}`;
+  let p = cache.get(key);
   if (!p) {
     p = slot(() => render(url, width));
-    p.catch(() => cache.delete(url));
-    cache.set(url, p);
+    p.catch(() => cache.delete(key));
+    cache.set(key, p);
   }
   return p;
 }

@@ -7,13 +7,13 @@ export function percent(j: Pick<Job, "done" | "total">): number | null {
 }
 
 /** Polls a job until it ends; resolves with its result or throws its error. */
-export async function follow<R>(id: string, onProgress?: (pct: number | null) => void, every = 600): Promise<R> {
+export async function follow<R>(id: string, onProgress?: (pct: number | null, job: Job<R>) => void, every = 600): Promise<R> {
   for (;;) {
     const j = await api.job<R>(id);
     if (j.state === "done") return j.result as R;
     if (j.state === "failed") throw new Error(j.error || "The operation failed");
     if (j.state === "canceled") throw new Error("Canceled");
-    onProgress?.(percent(j));
+    onProgress?.(percent(j), j);
     await new Promise((r) => setTimeout(r, every));
   }
 }

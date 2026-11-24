@@ -574,7 +574,8 @@ func handleThumb(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no thumbnails", http.StatusNotFound)
 		return
 	}
-	b, ct, err := thumbs.Get(r.Context(), root, r.URL.Query().Get("path"))
+	size, _ := strconv.Atoi(r.URL.Query().Get("s")) // Get accepts only its two sizes
+	b, ct, err := thumbs.Get(r.Context(), root, r.URL.Query().Get("path"), size)
 	if errors.Is(err, thumb.ErrUnsupported) {
 		http.Error(w, err.Error(), http.StatusUnsupportedMediaType)
 		return

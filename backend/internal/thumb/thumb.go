@@ -36,7 +36,8 @@ import (
 )
 
 const (
-	Size      = 256
+	Size      = 256 // default edge; Large is for big grid cards
+	Large     = 512
 	MaxBytes  = 50 << 20
 	MaxPixels = 50_000_000
 )
@@ -63,8 +64,11 @@ func New(dir string, limit int64) (*Cache, error) {
 	return &Cache{dir: dir, limit: limit, slots: make(chan struct{}, 1)}, nil
 }
 
-// Get returns a thumbnail for rel and its content type.
-func (c *Cache) Get(ctx context.Context, root *safepath.Root, rel string) ([]byte, string, error) {
+// Get returns a thumbnail for rel at Size or Large and its content type.
+func (c *Cache) Get(ctx context.Context, root *safepath.Root, rel string, size int) ([]byte, string, error) {
+	if size != Large {
+		size = Size
+	}
 	rel, err := safepath.User(rel)
 	if err != nil {
 		return nil, "", err
@@ -80,7 +84,7 @@ func (c *Cache) Get(ctx context.Context, root *safepath.Root, rel string) ([]byt
 		return nil, "", ErrUnsupported
 	}
 
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%d|%d", rel, fi.ModTime().UnixNano(), fi.Size(), Size)))
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%d|%d", rel, fi.ModTime().UnixNano(), fi.Size(), size)))
 	file := filepath.Join(c.dir, hex.EncodeToString(sum[:16]))
 	if b, err := os.ReadFile(file); err == nil {
 		now := time.Now()
@@ -100,7 +104,7 @@ func (c *Cache) Get(ctx context.Context, root *safepath.Root, rel string) ([]byt
 		return nil, "", safepath.Err(err)
 	}
 	defer f.Close()
-	b, err := Make(io.LimitReader(f, MaxBytes))
+	b, err := MakeSize(io.LimitReader(f, MaxBytes), size)
 	if err != nil {
 		return nil, "", err
 	}
@@ -117,7 +121,10 @@ func sniff(b []byte) string {
 
 // Make decodes an image and returns a JPEG (or PNG, if it has transparency)
 // that fits in Size x Size.
-func Make(r io.Reader) ([]byte, error) {
+func Make(r io.Reader) ([]byte, error) { return MakeSize(r, Size) }
+
+// MakeSize is Make for a size x size box.
+func MakeSize(r io.Reader, size int) ([]byte, error) {
 	raw, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
@@ -136,11 +143,11 @@ func Make(r io.Reader) ([]byte, error) {
 
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
-	if w > Size || h > Size {
+	if w > size || h > size {
 		if w >= h {
-			w, h = Size, max(1, h*Size/w)
+			w, h = size, max(1, h*size/w)
 		} else {
-			w, h = max(1, w*Size/h), Size
+			w, h = max(1, w*size/h), size
 		}
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, w, h))

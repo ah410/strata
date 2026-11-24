@@ -229,7 +229,7 @@ export const api = {
     }).then((r) => r.version),
 
   /** The mtime in the URL means a changed image gets a fresh thumbnail. */
-  thumbUrl: (e: Entry) => `/api/thumb?path=${q(e.path)}&m=${q(e.modified)}`,
+  thumbUrl: (e: Entry, large = false) => `/api/thumb?path=${q(e.path)}&m=${q(e.modified)}${large ? "&s=512" : ""}`,
 
   /** A document's text peek for its grid card; the mtime keys the cache. */
   peek: (e: Entry) => req<DocPeek>(`/api/preview?path=${q(e.path)}&m=${q(e.modified)}`),

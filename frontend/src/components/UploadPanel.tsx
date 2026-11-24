@@ -1,35 +1,11 @@
-import { useEffect, useRef, useState } from "react";
 import type { UploadStatus } from "../lib/upload";
 import { bytes } from "../lib/format";
-import { Rate, smoothStep, timeLeft } from "../lib/rate";
+import { timeLeft } from "../lib/rate";
+import { useTransfer } from "../lib/useTransfer";
 
 /** Live progress for a running upload: bytes, files, speed and time left. */
 export function UploadPanel({ status, dir, queued, onCancel }: { status: UploadStatus; dir: string; queued: number; onCancel: () => void }) {
-  const rate = useRef(new Rate());
-  const [speed, setSpeed] = useState(0);
-  const real = useRef(status.sent);
-  const [shown, setShown] = useState(status.sent);
-
-  useEffect(() => {
-    real.current = status.sent;
-    rate.current.add(status.sent);
-  }, [status.sent]);
-  // Speed changes are read once a second so the numbers don't flicker.
-  useEffect(() => {
-    const t = window.setInterval(() => setSpeed(rate.current.perSecond()), 1000);
-    return () => window.clearInterval(t);
-  }, []);
-  // The shown count glides at the average speed instead of jumping.
-  useEffect(() => {
-    let last = performance.now();
-    let frame = requestAnimationFrame(function tick(now) {
-      setShown((s) => smoothStep(s, real.current, rate.current.perSecond(), now - last));
-      last = now;
-      frame = requestAnimationFrame(tick);
-    });
-    return () => cancelAnimationFrame(frame);
-  }, []);
-
+  const { shown, speed } = useTransfer(status.sent);
   const pct = status.total ? (shown / status.total) * 100 : 0;
   return (
     <div className="upload-panel" role="status" aria-live="polite">

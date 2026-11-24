@@ -87,7 +87,7 @@ func TestExifOrientationIsApplied(t *testing.T) {
 func TestCacheServesAndRefuses(t *testing.T) {
 	dir := t.TempDir()
 	root, _ := safepath.NewRoot(dir)
-	os.WriteFile(filepath.Join(dir, "a.png"), pngOf(300, 300, color.White), 0o644)
+	os.WriteFile(filepath.Join(dir, "a.png"), pngOf(1000, 1000, color.White), 0o644)
 	os.MkdirAll(filepath.Join(dir, ".strata"), 0o755)
 	os.WriteFile(filepath.Join(dir, ".strata", "b.png"), pngOf(3, 3, color.White), 0o644)
 	os.WriteFile(filepath.Join(dir, "doc.txt"), []byte("x"), 0o644)
@@ -99,19 +99,28 @@ func TestCacheServesAndRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, ct, err := c.Get(context.Background(), root, "a.png")
+	a, ct, err := c.Get(context.Background(), root, "a.png", Size)
 	if err != nil || ct != "image/jpeg" {
 		t.Fatalf("%v %s", err, ct)
 	}
-	b, _, _ := c.Get(context.Background(), root, "a.png")
+	b, _, _ := c.Get(context.Background(), root, "a.png", Size)
 	if !bytes.Equal(a, b) {
 		t.Error("cache hit differs")
 	}
 	if ents, _ := os.ReadDir(c.dir); len(ents) != 1 {
 		t.Errorf("cache holds %d files", len(ents))
 	}
+	// Large is cached separately; any other size means the default.
+	big, _, _ := c.Get(context.Background(), root, "a.png", Large)
+	odd, _, _ := c.Get(context.Background(), root, "a.png", 9999)
+	if cfg, _, err := image.DecodeConfig(bytes.NewReader(big)); err != nil || max(cfg.Width, cfg.Height) != Large {
+		t.Errorf("large thumbnail is %dx%d, %v", cfg.Width, cfg.Height, err)
+	}
+	if !bytes.Equal(odd, a) {
+		t.Error("unknown size did not fall back to the default")
+	}
 	for _, p := range []string{".strata/b.png", "doc.txt", "link.png", "../x.png", "missing.png"} {
-		if _, _, err := c.Get(context.Background(), root, p); err == nil {
+		if _, _, err := c.Get(context.Background(), root, p, Size); err == nil {
 			t.Errorf("%s: thumbnail made", p)
 		}
 	}

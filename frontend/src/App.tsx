@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, type AppState, type Entry, type Listing, type SearchResult } from "./lib/api";
 import { Canceled, fromDrop, fromInput, fromPaste, uploadAll, type UploadItem, type UploadStatus } from "./lib/upload";
 import { UploadPanel } from "./components/UploadPanel";
+import { JobPanel, type RunningJob } from "./components/JobPanel";
 import { bytes, freeCopyName, joinPath, parentOf, when } from "./lib/format";
 import { Capacity } from "./components/Capacity";
 import { Glyph } from "./components/Glyph";
@@ -11,7 +12,7 @@ import { AppearanceDialog, type SettingsSection } from "./components/Appearance"
 import { History } from "./components/History";
 import { TrashView } from "./components/TrashView";
 import { FolderPicker } from "./components/FolderPicker";
-import { FileGrid } from "./components/FileGrid";
+import { CardSizeSlider, FileGrid } from "./components/FileGrid";
 import { TextEditor } from "./components/TextEditor";
 import { actionForKey, actionsFor, type ActionId, type Ctx } from "./lib/actions";
 import { combo, display, step, typeahead, TYPEAHEAD_MS } from "./lib/keys";
@@ -46,7 +47,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
   const [open, setOpen] = useState<Entry | null>(null);
   const [prompt, setPrompt] = useState<null | { title: string; label: string; value: string; onOk: (v: string) => void }>(null);
   const [note, setNote] = useState<Note>(null);
-  const [progress, setProgress] = useState<number | null>(null);
+  const [jobs, setJobs] = useState<RunningJob[]>([]);
   const [dragging, setDragging] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
   const [appearanceOpen, setAppearanceOpen] = useState<false | SettingsSection>(false);
@@ -419,22 +420,25 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
     if (!copy) loadSaved();
   };
 
-  // Runs a server job with the top progress bar, then refreshes.
-  const runJob = async <R,>(start: Promise<string>, done: (r: R) => void) => {
-    setProgress(0);
+  // Runs a server job with a progress panel, then refreshes.
+  const runJob = async <R,>(title: string, start: Promise<string>, done: (r: R) => void) => {
+    let id = "";
     try {
-      done(await follow<R>(await start, (p) => setProgress(p ?? 0)));
+      id = await start;
+      setJobs((js) => [...js, { id, title, done: 0, total: 0 }]);
+      done(await follow<R>(id, (_, j) => setJobs((js) => js.map((x) => (x.id === id ? { ...x, done: j.done, total: j.total } : x)))));
       refresh();
     } catch (e) {
-      toast((e as Error).message, true);
+      const msg = (e as Error).message;
+      if (msg === "Canceled") toast(`Canceled ${title[0].toLowerCase()}${title.slice(1)}`);
+      else toast(msg, true);
     } finally {
-      setProgress(null);
+      setJobs((js) => js.filter((x) => x.id !== id));
     }
   };
 
   const extract = (e: Entry) => {
-    toast(`Extracting ${e.name}…`);
-    runJob<string>(api.extract(e.path), (dest) =>
+    runJob<string>(`Extracting ${e.name}`, api.extract(e.path), (dest) =>
       toast(`Extracted to ${dest.split("/").pop()}`, false, { label: "Open", run: () => navigate(dest) }));
   };
 
@@ -572,8 +576,7 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
       case "move": case "copy": return setPicker({ mode: id, items: sel });
       case "download": return download(sel);
       case "compress":
-        toast(`Compressing ${plural(sel.length, "item")}…`);
-        return runJob<string>(api.compress(paths, searchMode ? parentOf(paths[0]) : path), (zip) =>
+        return runJob<string>(`Compressing ${sel.length === 1 ? sel[0].name : plural(sel.length, "item")}`, api.compress(paths, searchMode ? parentOf(paths[0]) : path), (zip) =>
           toast(`Saved ${zip.split("/").pop()}`));
       case "delete": return remove(paths);
       case "layout": return setLayout(layout === "list" ? "grid" : "list");
@@ -855,9 +858,12 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
             {actionsFor(ctx(pickedEntries), "toolbar").map((a) => {
               const c = ctx(pickedEntries);
               return a.id === "layout" ? (
-                <button key={a.id} className="btn btn-icon" onClick={() => perform(a.id, [])} aria-label={a.label(c)} title={a.label(c)}>
-                  {layout === "list" ? "▦" : "☰"}
-                </button>
+                <span key={a.id} className="layout-tools">
+                  {layout === "grid" && <CardSizeSlider />}
+                  <button className="btn btn-icon" onClick={() => perform(a.id, [])} aria-label={a.label(c)} title={a.label(c)}>
+                    {layout === "list" ? "▦" : "☰"}
+                  </button>
+                </span>
               ) : (
                 <button
                   key={a.id}
@@ -870,8 +876,6 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
             })}
           </div>
         </div>
-
-        {progress !== null && <div className="progress" style={{ width: `${progress}%` }} />}
 
         <div
           className={`listing${dragging ? " dropping" : ""}`}
@@ -1067,7 +1071,14 @@ export default function App({ onSignOut }: { onSignOut?: () => void }) {
         />
       )}
 
-      {upState && <UploadPanel status={upState.status} dir={upState.dir} queued={queued} onCancel={() => running.current?.abort()} />}
+      {(upState || jobs.length > 0) && (
+        <div className="panel-stack">
+          {jobs.map((j) => (
+            <JobPanel key={j.id} job={j} onCancel={() => api.cancelJob(j.id)} />
+          ))}
+          {upState && <UploadPanel status={upState.status} dir={upState.dir} queued={queued} onCancel={() => running.current?.abort()} />}
+        </div>
+      )}
 
       {note && (
         <div className={`toast${note.error ? " err" : ""}`} role="status">
